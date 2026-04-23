@@ -1,0 +1,218 @@
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import {
+  base64ToInt16,
+  base64ToUint8,
+  downsample16to8,
+  int16ToBase64,
+  mulawToPcm16,
+  pcm16ToMulaw,
+  uint8ToBase64,
+  upsample8to16,
+} from "../_shared/audio.ts";
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+function resolveElevenLabsKey(): string {
+  return (
+    Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim() ||
+    Deno.env.get("ELEVENLABS_API_KEY")?.trim() ||
+    ""
+  );
+}
+
+async function getOrFetchAgentId(supabase: ReturnType<typeof createClient>, apiKey: string): Promise<string | null> {
+  const envAgentId = Deno.env.get("ELEVENLABS_AGENT_ID")?.trim();
+  if (envAgentId) return envAgentId;
+
+  // Best-effort: list agents and find Sam
+  try {
+    const res = await fetch("https://api.elevenlabs.io/v1/convai/agents", {
+      headers: { "xi-api-key": apiKey },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const agent = (data.agents || []).find((a: any) => a.name === "Sam - Barber Launch");
+    return agent?.agent_id || null;
+  } catch {
+    return null;
+  }
+}
+
+Deno.serve(async (req) => {
+  const upgrade = req.headers.get("upgrade") || "";
+  if (upgrade.toLowerCase() !== "websocket") {
+    return new Response("expected websocket", { status: 426 });
+  }
+
+  const url = new URL(req.url);
+  const conversationId = url.searchParams.get("conv");
+  const tenantId = url.searchParams.get("tenant");
+  const callerPhone = url.searchParams.get("caller") || "";
+
+  if (!conversationId || !tenantId) {
+    return new Response("missing conv or tenant", { status: 400 });
+  }
+
+  const apiKey = resolveElevenLabsKey();
+  if (!apiKey) {
+    return new Response("ElevenLabs key not configured", { status: 500 });
+  }
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  const agentId = await getOrFetchAgentId(supabase, apiKey);
+  if (!agentId) {
+    return new Response("ElevenLabs agent not found", { status: 500 });
+  }
+
+  const { socket: telnyxSocket, response } = Deno.upgradeWebSocket(req);
+
+  // Connect to ElevenLabs
+  const elUrl = `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${agentId}`;
+  const elSocket = new WebSocket(elUrl, { headers: { "xi-api-key": apiKey } } as any);
+
+  let telnyxStreamId: string | null = null;
+  let elReady = false;
+  const pendingTelnyxAudio: Uint8Array[] = [];
+
+  const closeBoth = (reason: string) => {
+    console.log(`[bridge ${conversationId}] closing: ${reason}`);
+    try { telnyxSocket.close(); } catch {}
+    try { elSocket.close(); } catch {}
+    supabase
+      .from("conversations")
+      .update({ ended_at: new Date().toISOString() })
+      .eq("id", conversationId)
+      .then(() => {});
+  };
+
+  // ElevenLabs → Telnyx
+  elSocket.onopen = () => {
+    console.log(`[bridge ${conversationId}] EL open`);
+    elSocket.send(
+      JSON.stringify({
+        type: "conversation_initiation_client_data",
+        dynamic_variables: {
+          tenant_id: tenantId,
+          caller_phone: callerPhone,
+          conversation_id: conversationId,
+        },
+      }),
+    );
+  };
+
+  elSocket.onmessage = async (ev) => {
+    let msg: any;
+    try { msg = JSON.parse(ev.data as string); } catch { return; }
+
+    switch (msg.type) {
+      case "conversation_initiation_metadata":
+        elReady = true;
+        // Flush any buffered audio
+        for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
+        pendingTelnyxAudio.length = 0;
+        break;
+
+      case "audio": {
+        const b64 = msg.audio_event?.audio_base_64;
+        if (!b64 || !telnyxStreamId) break;
+        // EL sends PCM 16k base64. Downsample → μ-law 8k → base64 → Telnyx media frame.
+        const pcm16k = base64ToInt16(b64);
+        const pcm8k = downsample16to8(pcm16k);
+        const mulaw = pcm16ToMulaw(pcm8k);
+        const payload = uint8ToBase64(mulaw);
+        telnyxSocket.send(JSON.stringify({
+          event: "media",
+          stream_id: telnyxStreamId,
+          media: { payload },
+        }));
+        break;
+      }
+
+      case "user_transcript": {
+        const text = msg.user_transcription_event?.user_transcript;
+        if (text) {
+          await supabase.from("transcript_entries").insert({
+            conversation_id: conversationId,
+            role: "user",
+            text,
+          });
+        }
+        break;
+      }
+
+      case "agent_response": {
+        const text = msg.agent_response_event?.agent_response;
+        if (text) {
+          await supabase.from("transcript_entries").insert({
+            conversation_id: conversationId,
+            role: "agent",
+            text,
+          });
+        }
+        break;
+      }
+
+      case "ping":
+        elSocket.send(JSON.stringify({
+          type: "pong",
+          event_id: msg.ping_event?.event_id,
+        }));
+        break;
+
+      case "interruption":
+        if (telnyxStreamId) {
+          telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
+        }
+        break;
+    }
+  };
+
+  elSocket.onerror = (e) => console.error(`[bridge ${conversationId}] EL error`, e);
+  elSocket.onclose = () => closeBoth("EL closed");
+
+  function sendUserAudioToEL(mulawBytes: Uint8Array) {
+    // Telnyx μ-law 8k → PCM 16 → upsample to 16k → base64 → user_audio_chunk
+    const pcm8k = mulawToPcm16(mulawBytes);
+    const pcm16k = upsample8to16(pcm8k);
+    elSocket.send(JSON.stringify({
+      user_audio_chunk: int16ToBase64(pcm16k),
+    }));
+  }
+
+  // Telnyx → ElevenLabs
+  telnyxSocket.onopen = () => console.log(`[bridge ${conversationId}] Telnyx WS open`);
+
+  telnyxSocket.onmessage = (ev) => {
+    let frame: any;
+    try { frame = JSON.parse(ev.data as string); } catch { return; }
+
+    switch (frame.event) {
+      case "start":
+        telnyxStreamId = frame.stream_id || frame.start?.stream_id;
+        console.log(`[bridge ${conversationId}] Telnyx stream started: ${telnyxStreamId}`);
+        break;
+
+      case "media": {
+        const payload = frame.media?.payload;
+        if (!payload) break;
+        const mulaw = base64ToUint8(payload);
+        if (elReady && elSocket.readyState === WebSocket.OPEN) {
+          sendUserAudioToEL(mulaw);
+        } else {
+          pendingTelnyxAudio.push(mulaw);
+        }
+        break;
+      }
+
+      case "stop":
+        closeBoth("Telnyx stream stopped");
+        break;
+    }
+  };
+
+  telnyxSocket.onerror = (e) => console.error(`[bridge ${conversationId}] Telnyx error`, e);
+  telnyxSocket.onclose = () => closeBoth("Telnyx closed");
+
+  return response;
+});
