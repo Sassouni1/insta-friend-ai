@@ -122,11 +122,11 @@ Entry: "And just to confirm -- are you in Pacific, Eastern, Central, or somethin
 
 STAGE 8 - Scheduling
 Goal: Quote real available times and lock in a specific slot.
-Action: Call the `get_availability` tool with the current tenant_id (from dynamic variables) to fetch the next 3 open slots from the calendar. Read those times back naturally in the user's timezone. If none work, ask for their preferred range and call the tool again with more days_ahead.
+Action: Call the get_availability tool with the current tenant_id (from dynamic variables) to fetch the next 3 open slots from the calendar. Read those times back naturally in the user's timezone. If none work, ask for their preferred range and call the tool again with more days_ahead.
 
 STAGE 9 - Confirm Booking
 Goal: Confirm and book the appointment live.
-Action: Once the user picks a slot, collect their full name and email if you don't already have them. Confirm everything verbally: "Just to confirm -- [name] at [phone], booking [date] at [time]?" When they say yes, call the `book_appointment` tool with tenant_id, caller_name, caller_phone (from dynamic variables), caller_email, and the chosen slot_iso.
+Action: Once the user picks a slot, collect their full name and email if you don't already have them. Confirm everything verbally -- "Just to confirm, [name] at [phone], booking [date] at [time]?" When they say yes, call the book_appointment tool with tenant_id, caller_name, caller_phone (from dynamic variables), caller_email, and the chosen slot_iso.
 
 STAGE 10 - Wrap Up
 Goal: Thank them and end the call.
