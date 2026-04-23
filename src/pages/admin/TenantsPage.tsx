@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Pencil, Trash2 } from "lucide-react";
+import { Plus, Pencil, Trash2, Link2, Loader2 } from "lucide-react";
 
 interface Tenant {
   id: string;
@@ -30,6 +30,26 @@ export default function TenantsPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Tenant | null>(null);
   const [form, setForm] = useState(empty);
+  const [connecting, setConnecting] = useState(false);
+
+  const connectAgency = async () => {
+    setConnecting(true);
+    try {
+      const redirectUri = `https://quezinwuuxzyqsntzicm.supabase.co/functions/v1/crm-oauth-callback`;
+      const { data, error } = await supabase.functions.invoke("crm-oauth-start", {
+        body: { redirect_uri: redirectUri },
+      });
+      if (error || !data?.url) {
+        toast({ variant: "destructive", title: "Connect failed", description: error?.message || "No URL returned" });
+        setConnecting(false);
+        return;
+      }
+      window.location.href = data.url;
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Connect failed", description: err.message });
+      setConnecting(false);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -83,8 +103,13 @@ export default function TenantsPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 gap-2 flex-wrap">
         <h1 className="text-2xl font-semibold">Tenants</h1>
+        <div className="flex gap-2 flex-wrap">
+          <Button variant="outline" onClick={connectAgency} disabled={connecting}>
+            {connecting ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Link2 className="w-4 h-4 mr-1" />}
+            Connect CRM agency
+          </Button>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
             <Button onClick={openNew}><Plus className="w-4 h-4 mr-1" />New tenant</Button>
@@ -107,6 +132,7 @@ export default function TenantsPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       <Card>

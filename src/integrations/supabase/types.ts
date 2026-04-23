@@ -112,6 +112,30 @@ export type Database = {
           },
         ]
       }
+      oauth_states: {
+        Row: {
+          created_at: string
+          expires_at: string
+          id: string
+          state: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          expires_at?: string
+          id?: string
+          state: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          expires_at?: string
+          id?: string
+          state?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       phone_numbers: {
         Row: {
           active: boolean
@@ -153,9 +177,13 @@ export type Database = {
           created_at: string
           ghl_api_token: string | null
           ghl_calendar_id: string | null
+          ghl_company_id: string | null
           ghl_location_id: string | null
+          ghl_refresh_token: string | null
+          ghl_token_expires_at: string | null
           id: string
           name: string
+          oauth_imported: boolean
           timezone: string
           updated_at: string
         }
@@ -164,9 +192,13 @@ export type Database = {
           created_at?: string
           ghl_api_token?: string | null
           ghl_calendar_id?: string | null
+          ghl_company_id?: string | null
           ghl_location_id?: string | null
+          ghl_refresh_token?: string | null
+          ghl_token_expires_at?: string | null
           id?: string
           name: string
+          oauth_imported?: boolean
           timezone?: string
           updated_at?: string
         }
@@ -175,9 +207,13 @@ export type Database = {
           created_at?: string
           ghl_api_token?: string | null
           ghl_calendar_id?: string | null
+          ghl_company_id?: string | null
           ghl_location_id?: string | null
+          ghl_refresh_token?: string | null
+          ghl_token_expires_at?: string | null
           id?: string
           name?: string
+          oauth_imported?: boolean
           timezone?: string
           updated_at?: string
         }
