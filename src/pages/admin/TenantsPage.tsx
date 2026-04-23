@@ -35,7 +35,7 @@ export default function TenantsPage() {
   const connectAgency = async () => {
     setConnecting(true);
     try {
-      const redirectUri = `https://quezinwuuxzyqsntzicm.supabase.co/functions/v1/crm-oauth-callback`;
+      const redirectUri = `${window.location.origin}/oauth/crm/callback`;
       const { data, error } = await supabase.functions.invoke("crm-oauth-start", {
         body: { redirect_uri: redirectUri },
       });
