@@ -14,27 +14,172 @@ export type Database = {
   }
   public: {
     Tables: {
+      bookings: {
+        Row: {
+          caller_email: string | null
+          caller_name: string | null
+          caller_phone: string | null
+          conversation_id: string | null
+          created_at: string
+          ghl_appointment_id: string | null
+          id: string
+          slot_iso: string
+          status: string
+          tenant_id: string
+        }
+        Insert: {
+          caller_email?: string | null
+          caller_name?: string | null
+          caller_phone?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          ghl_appointment_id?: string | null
+          id?: string
+          slot_iso: string
+          status?: string
+          tenant_id: string
+        }
+        Update: {
+          caller_email?: string | null
+          caller_name?: string | null
+          caller_phone?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          ghl_appointment_id?: string | null
+          id?: string
+          slot_iso?: string
+          status?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bookings_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "bookings_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       conversations: {
         Row: {
           agent_id: string | null
+          caller_phone: string | null
           created_at: string
+          direction: string
           ended_at: string | null
           id: string
           started_at: string
+          telnyx_call_control_id: string | null
+          tenant_id: string | null
         }
         Insert: {
           agent_id?: string | null
+          caller_phone?: string | null
           created_at?: string
+          direction?: string
           ended_at?: string | null
           id?: string
           started_at?: string
+          telnyx_call_control_id?: string | null
+          tenant_id?: string | null
         }
         Update: {
           agent_id?: string | null
+          caller_phone?: string | null
           created_at?: string
+          direction?: string
           ended_at?: string | null
           id?: string
           started_at?: string
+          telnyx_call_control_id?: string | null
+          tenant_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversations_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      phone_numbers: {
+        Row: {
+          active: boolean
+          created_at: string
+          e164_number: string
+          id: string
+          telnyx_connection_id: string | null
+          tenant_id: string
+        }
+        Insert: {
+          active?: boolean
+          created_at?: string
+          e164_number: string
+          id?: string
+          telnyx_connection_id?: string | null
+          tenant_id: string
+        }
+        Update: {
+          active?: boolean
+          created_at?: string
+          e164_number?: string
+          id?: string
+          telnyx_connection_id?: string | null
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "phone_numbers_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tenants: {
+        Row: {
+          active: boolean
+          created_at: string
+          ghl_api_token: string | null
+          ghl_calendar_id: string | null
+          ghl_location_id: string | null
+          id: string
+          name: string
+          timezone: string
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          created_at?: string
+          ghl_api_token?: string | null
+          ghl_calendar_id?: string | null
+          ghl_location_id?: string | null
+          id?: string
+          name: string
+          timezone?: string
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          created_at?: string
+          ghl_api_token?: string | null
+          ghl_calendar_id?: string | null
+          ghl_location_id?: string | null
+          id?: string
+          name?: string
+          timezone?: string
+          updated_at?: string
         }
         Relationships: []
       }
@@ -76,15 +221,42 @@ export type Database = {
           },
         ]
       }
+      user_roles: {
+        Row: {
+          created_at: string
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["app_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
     }
     Enums: {
-      [_ in never]: never
+      app_role: "admin"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -211,6 +383,8 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      app_role: ["admin"],
+    },
   },
 } as const
