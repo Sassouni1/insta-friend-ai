@@ -1,1 +1,13 @@
 project_id = "quezinwuuxzyqsntzicm"
+
+[functions.telnyx-inbound]
+verify_jwt = false
+
+[functions.telnyx-bridge]
+verify_jwt = false
+
+[functions.ghl-get-availability]
+verify_jwt = false
+
+[functions.ghl-book-appointment]
+verify_jwt = false
