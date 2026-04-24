@@ -8,8 +8,7 @@ const GHL_CLIENT_ID = Deno.env.get("GHL_CLIENT_ID")!;
 const GHL_CLIENT_SECRET = Deno.env.get("GHL_CLIENT_SECRET")!;
 
 const TOKEN_URL = "https://services.leadconnectorhq.com/oauth/token";
-const LOCATIONS_URL = "https://services.leadconnectorhq.com/locations/search";
-const LOCATION_TOKEN_URL = "https://services.leadconnectorhq.com/oauth/locationToken";
+const LOCATION_URL = "https://services.leadconnectorhq.com/locations/";
 
 function htmlResponse(body: string, status = 200) {
   return new Response(body, {
@@ -59,7 +58,7 @@ serve(async (req) => {
   }
   await supabase.from("oauth_states").delete().eq("id", stateRow.id);
 
-  // Exchange code for agency token
+  // Exchange code for sub-account (Location) token
   const redirectUri = `${url.origin}${url.pathname}`;
   const tokenForm = new URLSearchParams({
     client_id: GHL_CLIENT_ID,
@@ -67,7 +66,7 @@ serve(async (req) => {
     grant_type: "authorization_code",
     code,
     redirect_uri: redirectUri,
-    user_type: "Company",
+    user_type: "Location",
   });
 
   const tokenRes = await fetch(TOKEN_URL, {
@@ -81,103 +80,77 @@ serve(async (req) => {
     return htmlResponse(pageShell("Connection failed", `<h1 class="err">Token exchange failed</h1><p>${JSON.stringify(tokenJson).slice(0, 300)}</p><a href="/admin/tenants">Back</a>`), 500);
   }
 
-  const agencyToken: string = tokenJson.access_token;
-  const companyId: string | undefined = tokenJson.companyId;
+  const accessToken: string = tokenJson.access_token;
+  const refreshToken: string | null = tokenJson.refresh_token || null;
+  const locationId: string | undefined = tokenJson.locationId;
+  const companyId: string | null = tokenJson.companyId || null;
+  const expiresAt = new Date(Date.now() + (Number(tokenJson.expires_in || 86400)) * 1000).toISOString();
 
-  if (!companyId) {
-    return htmlResponse(pageShell("Connection failed", `<h1 class="err">No companyId returned</h1><p>This token belongs to a single location, not an agency. Reconnect using your agency login.</p><a href="/admin/tenants">Back</a>`), 400);
+  if (!locationId) {
+    return htmlResponse(pageShell("Connection failed", `<h1 class="err">No locationId returned</h1><p>This token did not include a location. Reinstall on a single sub-account.</p><a href="/admin/tenants">Back</a>`), 400);
   }
 
-  // List all locations under this agency
-  const locRes = await fetch(`${LOCATIONS_URL}?companyId=${encodeURIComponent(companyId)}&limit=500`, {
-    headers: {
-      Authorization: `Bearer ${agencyToken}`,
-      Version: "2021-07-28",
-      Accept: "application/json",
-    },
-  });
-  const locJson: any = await locRes.json().catch(() => ({}));
-  if (!locRes.ok) {
-    console.error("[crm-oauth-callback] locations list failed", locRes.status, locJson);
-    return htmlResponse(pageShell("Connection failed", `<h1 class="err">Could not list locations</h1><p>${JSON.stringify(locJson).slice(0, 300)}</p><a href="/admin/tenants">Back</a>`), 500);
-  }
-
-  const locations: any[] = locJson.locations || [];
-  let imported = 0;
-  let skipped = 0;
-  const errors: string[] = [];
-
-  // For each location, mint a per-location token and upsert the tenant.
-  for (const loc of locations) {
-    const locId = loc.id;
-    const locName = loc.name || `Location ${locId}`;
-    if (!locId) continue;
-
-    try {
-      const locTokenForm = new URLSearchParams({
-        companyId,
-        locationId: locId,
-      });
-      const ltRes = await fetch(LOCATION_TOKEN_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${agencyToken}`,
-          Version: "2021-07-28",
-          Accept: "application/json",
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: locTokenForm.toString(),
-      });
-      const ltJson: any = await ltRes.json().catch(() => ({}));
-      if (!ltRes.ok || !ltJson.access_token) {
-        skipped++;
-        errors.push(`${locName}: ${JSON.stringify(ltJson).slice(0, 120)}`);
-        continue;
-      }
-
-      const expiresAt = new Date(Date.now() + (Number(ltJson.expires_in || 86400)) * 1000).toISOString();
-
-      // Upsert by ghl_location_id
-      const { data: existing } = await supabase
-        .from("tenants")
-        .select("id")
-        .eq("ghl_location_id", locId)
-        .maybeSingle();
-
-      const payload: any = {
-        name: locName,
-        ghl_location_id: locId,
-        ghl_api_token: ltJson.access_token,
-        ghl_refresh_token: ltJson.refresh_token || null,
-        ghl_token_expires_at: expiresAt,
-        ghl_company_id: companyId,
-        oauth_imported: true,
-        timezone: loc.timezone || "America/Los_Angeles",
-        active: true,
-      };
-
-      if (existing) {
-        await supabase.from("tenants").update(payload).eq("id", existing.id);
-      } else {
-        await supabase.from("tenants").insert(payload);
-      }
-      imported++;
-    } catch (err: any) {
-      skipped++;
-      errors.push(`${locName}: ${err.message}`);
+  // Fetch the location details for name + timezone
+  let locName = `Location ${locationId}`;
+  let locTimezone = "America/Los_Angeles";
+  try {
+    const locRes = await fetch(`${LOCATION_URL}${locationId}`, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Version: "2021-07-28",
+        Accept: "application/json",
+      },
+    });
+    const locJson: any = await locRes.json().catch(() => ({}));
+    if (locRes.ok) {
+      const loc = locJson.location || locJson;
+      if (loc?.name) locName = loc.name;
+      if (loc?.timezone) locTimezone = loc.timezone;
+    } else {
+      console.warn("[crm-oauth-callback] location fetch non-ok", locRes.status, locJson);
     }
+  } catch (err) {
+    console.warn("[crm-oauth-callback] location fetch failed", err);
   }
 
-  const errorList = errors.length
-    ? `<details style="text-align:left;margin-top:16px"><summary style="cursor:pointer;color:#a1a1aa">${errors.length} skipped</summary><pre style="white-space:pre-wrap;font-size:12px;color:#71717a">${errors.join("\n")}</pre></details>`
-    : "";
+  // Upsert tenant by ghl_location_id
+  const { data: existing } = await supabase
+    .from("tenants")
+    .select("id")
+    .eq("ghl_location_id", locationId)
+    .maybeSingle();
+
+  const payload: any = {
+    name: locName,
+    ghl_location_id: locationId,
+    ghl_api_token: accessToken,
+    ghl_refresh_token: refreshToken,
+    ghl_token_expires_at: expiresAt,
+    ghl_company_id: companyId,
+    oauth_imported: true,
+    timezone: locTimezone,
+    active: true,
+  };
+
+  let upsertError: string | null = null;
+  let action: "created" | "updated" = "created";
+  if (existing) {
+    action = "updated";
+    const { error } = await supabase.from("tenants").update(payload).eq("id", existing.id);
+    if (error) upsertError = error.message;
+  } else {
+    const { error } = await supabase.from("tenants").insert(payload);
+    if (error) upsertError = error.message;
+  }
+
+  if (upsertError) {
+    return htmlResponse(pageShell("Connection failed", `<h1 class="err">Could not save tenant</h1><p>${upsertError}</p><a href="/admin/tenants">Back</a>`), 500);
+  }
 
   return htmlResponse(pageShell("Connected", `
-    <h1>✓ CRM agency connected</h1>
-    <p><strong>${imported}</strong> sub-account${imported === 1 ? "" : "s"} imported as tenants.</p>
-    ${skipped ? `<p style="color:#a1a1aa">${skipped} skipped.</p>` : ""}
-    ${errorList}
-    <p style="color:#a1a1aa;font-size:13px;margin-top:16px">Next: pick a calendar for each tenant in the Tenants page.</p>
+    <h1>✓ Sub-account connected</h1>
+    <p><strong>${locName}</strong> was ${action} as a tenant.</p>
+    <p style="color:#a1a1aa;font-size:13px;margin-top:16px">Next: pick a calendar for this tenant on the Tenants page. To add another sub-account, click Connect again from a different sub-account login.</p>
     <a href="/admin/tenants">Back to tenants</a>
   `));
 });
