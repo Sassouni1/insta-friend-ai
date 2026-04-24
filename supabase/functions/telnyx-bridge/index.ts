@@ -295,6 +295,12 @@ Deno.serve(async (req) => {
             stream_id: telnyxStreamId,
             media: { payload: telnyxPayload },
           }));
+          // Mark agent as speaking — playback duration ≈ samples / 8000 * 1000 ms.
+          // Telnyx PCMU is 8kHz mono so payload byte count == sample count.
+          try {
+            const playoutMs = Math.ceil((atob(telnyxPayload).length / 8000) * 1000);
+            agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + playoutMs + AGENT_SPEAK_TAIL_MS);
+          } catch {}
           if (!firstAgentAudioSent) {
             firstAgentAudioSent = true;
             console.log(
