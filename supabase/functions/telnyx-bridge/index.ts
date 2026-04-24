@@ -266,6 +266,16 @@ Deno.serve(async (req) => {
           }));
           break;
 
+        case "vad_score": {
+          const score = msg.vad_score_event?.vad_score ?? msg.vad_score;
+          if (!firstVadLogged && typeof score === "number") {
+            firstVadLogged = true;
+            if (vadWarnTimer) clearTimeout(vadWarnTimer);
+            console.log(`[bridge ${conversationId}] FIRST vad_score=${score} — EL is decoding our audio`);
+          }
+          break;
+        }
+
         case "interruption":
           if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
             telnyxSocket.send(JSON.stringify({ event: "clear" }));
