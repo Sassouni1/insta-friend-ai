@@ -1,49 +1,47 @@
-# Plan — Fix the static (codec mismatch)
+## Goal
 
-## What we know from the last test call
+Place an outbound call from Sam to your phone using the Dial page, with the same audio quality and echo-gating that's now working on inbound.
 
-- Bidirectional audio is now flowing end-to-end (2127 frames each way) — the `stream_id` fix worked.
-- Caller heard **extreme static** instead of Sam's voice.
-- ElevenLabs never returned a `vad_score`, meaning EL also couldn't decode our inbound audio.
-- Conclusion: **codec/format mismatch in both directions**. We're labeling everything `ulaw_8000` but at least one side isn't actually using µ-law.
+## What needs to change
 
-## Step 1 — Add diagnostic logging (one deploy, one test call)
+The outbound function (`telnyx-outbound-call`) was written before we fixed inbound. It still uses `stream_track: "both_tracks"`, which on inbound caused Sam to hear his own TTS bleed back in and loop on himself. We need to match the inbound config exactly, since the bridge (transcoding + echo gate) is already format-agnostic to direction.
 
-Add three log lines to `telnyx-bridge/index.ts`:
+### Code change — `supabase/functions/telnyx-outbound-call/index.ts`
 
-1. Log the full `conversation_initiation_metadata` frame from EL — this shows the audio formats EL *actually* negotiated (vs. what we requested in the override).
-2. Log the first 32 bytes (hex) of the first inbound Telnyx media payload — confirms it's raw µ-law samples.
-3. Log the first 32 bytes (hex) of the first EL `audio` frame payload — tells us if EL sent raw µ-law, PCM, or wrapped audio.
+Change the `telnyxDial` call so it matches `telnyx-inbound`'s `answer` config:
 
-No behavior changes. Just instrumentation. Then place one test call.
+- `stream_track: "both_tracks"` → `stream_track: "inbound_track"` (caller's mic only — Sam's TTS goes back via the bidirectional WS, not via the echo of the outbound mix)
+- Everything else (`stream_codec: "PCMU"`, `stream_bidirectional_mode: "rtp"`, `stream_bidirectional_codec: "PCMU"`) stays the same — already correct.
 
-## Step 2 — Fix based on what step 1 reveals
+That's the only code change.
 
-Three possible outcomes, three different fixes:
+### Deploy
 
-**(a) EL metadata says `pcm_16000` (our override was ignored):**
-The agent's dashboard "Output format" is locked. Two options:
-- Change the agent's output format to `ulaw_8000` in the ElevenLabs dashboard (no code change, fastest).
-- Or transcode PCM 16kHz → µ-law 8kHz in the bridge before sending to Telnyx (more complex, keeps dashboard untouched).
+Deploy `telnyx-outbound-call` so the new config is live.
 
-**(b) EL metadata says `ulaw_8000` but the audio bytes look like PCM/WAV:**
-EL is wrapping the audio. Strip the wrapper or decode differently before forwarding to Telnyx.
+## Test procedure
 
-**(c) EL metadata says `ulaw_8000` and bytes look like µ-law, but Telnyx still produces static:**
-The raw bytes are correct but Telnyx expects a different framing (e.g. specific frame size like 160 bytes per 20ms). Add reframing/buffering.
+1. You go to `/admin/dial` in the app.
+2. Pick the tenant + your Telnyx caller-ID number.
+3. Paste a single line: `Chris, +1XXXXXXXXXX` (your cell).
+4. Click "Start dialing".
+5. Your phone rings. Answer it. Have a short conversation with Sam.
+6. Hang up and tell me:
+   - Did it ring through?
+   - Could you hear Sam clearly (no static)?
+   - Did Sam hear you (no looping/echo)?
+   - Any weirdness vs. the inbound call that just worked?
 
-## Step 3 — Re-test and confirm
+I'll pull the bridge logs after and confirm everything looks clean (vad_score firing, echo-gate dropping when expected, no codec warnings).
 
-One more test call. Success = caller hears Sam clearly with no static and EL returns `vad_score` events.
+## What we're NOT changing
 
-## What Chris needs to do
+- The bridge itself — already proven on inbound, it doesn't care about direction.
+- ElevenLabs config — same agent, same `pcm_16000` negotiation.
+- DB schema, RLS, auth — none of it needs to move.
 
-1. Approve this plan so I can add the diagnostic logging.
-2. Place one test call after I deploy.
-3. Report what you hear (still static? silence? partial words? clear voice?).
+## Risks / things I'll watch for in logs
 
-## Technical notes
-
-- The `agent_output_audio_format` and `user_input_audio_format` overrides in `conversation_initiation_client_data` are documented as supported, but agent dashboard settings can override them silently — this is a known EL gotcha.
-- Telnyx WebSocket bidirectional mode expects raw base64 µ-law samples in 20ms frames (160 bytes per frame at 8kHz). Wrong sample rate or wrong encoding produces the exact "extreme static" symptom.
-- No database or auth changes needed for any of these fixes.
+- **Telnyx rejects the dial** — usually a connection_id / from_number mismatch. The function already returns the Telnyx error body, so we'll see it immediately in the toast + logs.
+- **Call connects but no audio** — would mean the outbound media format negotiation differs from inbound. Bridge logs will show the same `media_format` line we saw for inbound; if it's not PCMU/8000 we adjust.
+- **Echo loop returns** — shouldn't, since the gate is generic, but if it does we tune `AGENT_SPEAK_TAIL_MS`.

@@ -74,7 +74,7 @@ serve(async (req) => {
     from: from_number,
     connection_id,
     stream_url: streamUrl,
-    stream_track: "both_tracks",
+    stream_track: "inbound_track",
     stream_codec: "PCMU",
     stream_bidirectional_mode: "rtp",
     stream_bidirectional_codec: "PCMU",
