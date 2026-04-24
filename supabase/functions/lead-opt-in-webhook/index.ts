@@ -34,7 +34,7 @@ async function fireCall(scheduledId: string) {
     .update({ status: "processing", attempts: 1 })
     .eq("id", scheduledId)
     .eq("status", "pending")
-    .select("id, tenant_id, lead_phone, lead_name")
+    .select("id, tenant_id, lead_phone, lead_name, lead_email")
     .maybeSingle();
 
   if (!claimed) {
@@ -43,13 +43,20 @@ async function fireCall(scheduledId: string) {
   }
 
   try {
-    const { data: phoneRow } = await supabase
-      .from("phone_numbers")
-      .select("e164_number, telnyx_connection_id")
-      .eq("tenant_id", claimed.tenant_id)
-      .eq("active", true)
-      .limit(1)
-      .maybeSingle();
+    const [{ data: phoneRow }, { data: tenantRow }] = await Promise.all([
+      supabase
+        .from("phone_numbers")
+        .select("e164_number, telnyx_connection_id")
+        .eq("tenant_id", claimed.tenant_id)
+        .eq("active", true)
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from("tenants")
+        .select("name, timezone")
+        .eq("id", claimed.tenant_id)
+        .maybeSingle(),
+    ]);
 
     if (!phoneRow?.e164_number || !phoneRow?.telnyx_connection_id) {
       throw new Error("no active phone number for tenant");
@@ -67,9 +74,17 @@ async function fireCall(scheduledId: string) {
 
     if (convErr || !convRow) throw new Error(`conversation insert failed: ${convErr?.message}`);
 
-    const streamUrl =
-      `${BRIDGE_WS_URL}?conv=${convRow.id}&tenant=${claimed.tenant_id}&caller=${encodeURIComponent(claimed.lead_phone)}` +
-      (claimed.lead_name ? `&name=${encodeURIComponent(claimed.lead_name)}` : "");
+    const params = new URLSearchParams({
+      conv: convRow.id,
+      tenant: claimed.tenant_id,
+      caller: claimed.lead_phone,
+    });
+    if (claimed.lead_name) params.set("name", claimed.lead_name);
+    if (claimed.lead_email) params.set("email", claimed.lead_email);
+    if (tenantRow?.name) params.set("company", tenantRow.name);
+    if (tenantRow?.timezone) params.set("tz", tenantRow.timezone);
+
+    const streamUrl = `${BRIDGE_WS_URL}?${params.toString()}`;
 
     const dialRes = await telnyxDial({
       to: claimed.lead_phone,
