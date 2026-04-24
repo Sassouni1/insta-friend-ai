@@ -199,6 +199,7 @@ Objections:
     switch (msg.type) {
       case "conversation_initiation_metadata":
         elReady = true;
+        console.log(`[bridge ${conversationId}] EL ready — flushing ${pendingTelnyxAudio.length} buffered frames`);
         // Flush any buffered audio
         for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
         pendingTelnyxAudio.length = 0;
