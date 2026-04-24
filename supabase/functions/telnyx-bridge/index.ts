@@ -286,17 +286,32 @@ Objections:
 
   telnyxSocket.onmessage = (ev) => {
     let frame: any;
-    try { frame = JSON.parse(ev.data as string); } catch { return; }
+    try { frame = JSON.parse(ev.data as string); } catch {
+      console.log(`[bridge ${conversationId}] Telnyx non-JSON frame`);
+      return;
+    }
 
     switch (frame.event) {
+      case "connected":
+        console.log(`[bridge ${conversationId}] Telnyx connected frame: ${JSON.stringify(frame).slice(0, 300)}`);
+        break;
+
       case "start":
         telnyxStreamId = frame.stream_id || frame.start?.stream_id;
-        console.log(`[bridge ${conversationId}] Telnyx stream started: ${telnyxStreamId}`);
+        console.log(`[bridge ${conversationId}] Telnyx START stream_id=${telnyxStreamId} payload=${JSON.stringify(frame).slice(0, 400)}`);
         break;
 
       case "media": {
         const payload = frame.media?.payload;
         if (!payload) break;
+        telnyxMediaCount++;
+        if (!firstCallerAudioLogged) {
+          firstCallerAudioLogged = true;
+          console.log(`[bridge ${conversationId}] FIRST caller audio received from Telnyx`);
+        }
+        if (telnyxMediaCount % 250 === 0) {
+          console.log(`[bridge ${conversationId}] Telnyx media frames: ${telnyxMediaCount}`);
+        }
         const mulaw = base64ToUint8(payload);
         if (elReady && elSocket.readyState === WebSocket.OPEN) {
           sendUserAudioToEL(mulaw);
@@ -307,8 +322,16 @@ Objections:
       }
 
       case "stop":
+        console.log(`[bridge ${conversationId}] Telnyx STOP after ${telnyxMediaCount} media frames`);
         closeBoth("Telnyx stream stopped");
         break;
+
+      case "error":
+        console.error(`[bridge ${conversationId}] Telnyx ERROR frame: ${JSON.stringify(frame)}`);
+        break;
+
+      default:
+        console.log(`[bridge ${conversationId}] Telnyx unknown event: ${frame.event}`);
     }
   };
 
