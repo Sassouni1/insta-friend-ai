@@ -529,3 +529,11 @@ function VoiceAgentInner() {
     </div>
   );
 }
+
+export function VoiceAgent() {
+  return (
+    <ConversationProvider>
+      <VoiceAgentInner />
+    </ConversationProvider>
+  );
+}
