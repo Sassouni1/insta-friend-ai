@@ -101,10 +101,23 @@ Deno.serve(async (req) => {
   let firstCallerAudioLogged = false;
   let firstAgentAudioSent = false;
   let telnyxMediaCount = 0;
+  let telnyxFrameCount = 0;
   const pendingTelnyxAudio: Uint8Array[] = [];
+
+  console.log(`[bridge ${conversationId}] params tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
+
+  // If Telnyx never sends a `start` frame within 5s of `connected`, log it loudly.
+  let connectedAt: number | null = null;
+  let startSeen = false;
+  const startTimer = setTimeout(() => {
+    if (connectedAt && !startSeen) {
+      console.error(`[bridge ${conversationId}] NO START frame 5s after connected — Telnyx media negotiation likely failed`);
+    }
+  }, 5000);
 
   const closeBoth = (reason: string) => {
     console.log(`[bridge ${conversationId}] closing: ${reason}`);
+    clearTimeout(startTimer);
     try { telnyxSocket.close(); } catch {}
     try { elSocket.close(); } catch {}
     supabase
@@ -292,12 +305,20 @@ Objections:
       return;
     }
 
+    telnyxFrameCount++;
+    if (telnyxFrameCount <= 5) {
+      console.log(`[bridge ${conversationId}] Telnyx frame #${telnyxFrameCount} event=${frame.event}`);
+    }
+
     switch (frame.event) {
       case "connected":
+        connectedAt = Date.now();
         console.log(`[bridge ${conversationId}] Telnyx connected frame: ${JSON.stringify(frame).slice(0, 300)}`);
         break;
 
       case "start":
+        startSeen = true;
+        clearTimeout(startTimer);
         telnyxStreamId = frame.stream_id || frame.start?.stream_id;
         console.log(`[bridge ${conversationId}] Telnyx START stream_id=${telnyxStreamId} payload=${JSON.stringify(frame).slice(0, 400)}`);
         break;
@@ -337,7 +358,10 @@ Objections:
   };
 
   telnyxSocket.onerror = (e) => console.error(`[bridge ${conversationId}] Telnyx error`, e);
-  telnyxSocket.onclose = () => closeBoth("Telnyx closed");
+  telnyxSocket.onclose = (ev) => {
+    console.log(`[bridge ${conversationId}] Telnyx WS closed code=${ev.code} reason="${ev.reason}" wasClean=${ev.wasClean} totalFrames=${telnyxFrameCount} mediaFrames=${telnyxMediaCount} startSeen=${startSeen}`);
+    closeBoth("Telnyx closed");
+  };
 
   return response;
 });
