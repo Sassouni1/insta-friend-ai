@@ -213,7 +213,6 @@ Objections:
 - not sure it would work → explain that's why the consult exists, then redirect to earlier/later
 - don't want fake looking → explain seeing it makes it click, then redirect to morning/afternoon`,
               },
-              first_message: `Hey — is this ${firstName}?`,
               language: "en",
             },
             tts: {
