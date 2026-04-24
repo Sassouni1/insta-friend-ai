@@ -1,4 +1,14 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import {
+  base64ToInt16,
+  base64ToUint8,
+  downsample16to8,
+  int16ToBase64,
+  mulawToPcm16,
+  pcm16ToMulaw,
+  uint8ToBase64,
+  upsample8to16,
+} from "../_shared/audio.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -26,6 +36,18 @@ async function getOrFetchAgentId(supabase: ReturnType<typeof createClient>, apiK
   } catch {
     return null;
   }
+}
+
+function isMulaw8000(format: string | null): boolean {
+  return format === "ulaw_8000" || format === "mulaw_8000";
+}
+
+function isPcm8000(format: string | null): boolean {
+  return format === "pcm_8000";
+}
+
+function isPcm16000(format: string | null): boolean {
+  return format === "pcm_16000";
 }
 
 Deno.serve(async (req) => {
@@ -86,6 +108,8 @@ Deno.serve(async (req) => {
   let elConnecting = false;
   let telnyxStreamId: string | null = null;
   let elReady = false;
+  let elUserInputAudioFormat: string | null = null;
+  let elAgentOutputAudioFormat: string | null = null;
   let firstCallerAudioLogged = false;
   let firstAgentAudioSent = false;
   let firstUserChunkSentAt: number | null = null;
@@ -124,13 +148,52 @@ Deno.serve(async (req) => {
       .then(() => {});
   };
 
+  function transformTelnyxAudioForEL(mulawB64: string): string {
+    const targetFormat = elUserInputAudioFormat || "pcm_16000";
+    if (isMulaw8000(targetFormat)) return mulawB64;
+
+    const mulaw = base64ToUint8(mulawB64);
+    const pcm8 = mulawToPcm16(mulaw);
+
+    if (isPcm8000(targetFormat)) return int16ToBase64(pcm8);
+    if (isPcm16000(targetFormat)) return int16ToBase64(upsample8to16(pcm8));
+
+    console.warn(`[bridge ${conversationId}] unknown EL input format ${targetFormat}, defaulting Telnyx→EL to pcm_16000`);
+    return int16ToBase64(upsample8to16(pcm8));
+  }
+
+  function transformELAudioForTelnyx(audioB64: string): string {
+    const sourceFormat = elAgentOutputAudioFormat || "pcm_16000";
+    if (isMulaw8000(sourceFormat)) return audioB64;
+
+    if (isPcm8000(sourceFormat)) {
+      const pcm8 = base64ToInt16(audioB64);
+      return uint8ToBase64(pcm16ToMulaw(pcm8));
+    }
+
+    if (isPcm16000(sourceFormat)) {
+      const pcm16 = base64ToInt16(audioB64);
+      const pcm8 = downsample16to8(pcm16);
+      return uint8ToBase64(pcm16ToMulaw(pcm8));
+    }
+
+    console.warn(`[bridge ${conversationId}] unknown EL output format ${sourceFormat}, defaulting EL→Telnyx to pcm_16000 -> PCMU`);
+    const pcm16 = base64ToInt16(audioB64);
+    const pcm8 = downsample16to8(pcm16);
+    return uint8ToBase64(pcm16ToMulaw(pcm8));
+  }
+
   function sendUserAudioToEL(mulawB64: string) {
     if (!elSocket || elSocket.readyState !== WebSocket.OPEN) return;
-    // Raw µ-law 8kHz passthrough — EL agent is configured for ulaw_8000.
-    elSocket.send(JSON.stringify({ user_audio_chunk: mulawB64 }));
+
+    const transformedAudio = transformTelnyxAudioForEL(mulawB64);
+    elSocket.send(JSON.stringify({ user_audio_chunk: transformedAudio }));
+
     if (firstUserChunkSentAt === null) {
       firstUserChunkSentAt = Date.now();
-      console.log(`[bridge ${conversationId}] FIRST user_audio_chunk sent to EL (ulaw_8000 raw passthrough)`);
+      console.log(
+        `[bridge ${conversationId}] FIRST user_audio_chunk sent to EL (Telnyx PCMU 8k -> ${elUserInputAudioFormat || "pcm_16000"})`,
+      );
       vadWarnTimer = setTimeout(() => {
         if (!firstVadLogged) {
           console.error(`[bridge ${conversationId}] WARN — 4s of audio sent, no vad_score from EL. Format mismatch likely.`);
@@ -149,14 +212,14 @@ Deno.serve(async (req) => {
 
     socket.onopen = () => {
       elConnecting = false;
-      console.log(`[bridge ${conversationId}] EL open — pinning ulaw_8000 both directions`);
+      console.log(`[bridge ${conversationId}] EL open — requesting pcm_16000 both directions`);
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
       socket.send(
         JSON.stringify({
           type: "conversation_initiation_client_data",
           conversation_config_override: {
-            asr: { user_input_audio_format: "ulaw_8000" },
-            tts: { agent_output_audio_format: "ulaw_8000" },
+            asr: { user_input_audio_format: "pcm_16000" },
+            tts: { agent_output_audio_format: "pcm_16000" },
             conversation: {
               client_events: [
                 "audio",
@@ -193,13 +256,19 @@ Deno.serve(async (req) => {
       }
 
       switch (msg.type) {
-        case "conversation_initiation_metadata":
+        case "conversation_initiation_metadata": {
+          const meta = msg.conversation_initiation_metadata_event || {};
+          elUserInputAudioFormat = meta.user_input_audio_format || null;
+          elAgentOutputAudioFormat = meta.agent_output_audio_format || null;
           elReady = true;
           console.log(`[bridge ${conversationId}] EL META: ${JSON.stringify(msg).slice(0, 800)}`);
-          console.log(`[bridge ${conversationId}] EL ready — flushing ${pendingTelnyxAudio.length} buffered frames`);
+          console.log(
+            `[bridge ${conversationId}] EL ready — negotiated in=${elUserInputAudioFormat || "unknown"} out=${elAgentOutputAudioFormat || "unknown"}; flushing ${pendingTelnyxAudio.length} buffered frames`,
+          );
           for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
           pendingTelnyxAudio.length = 0;
           break;
+        }
 
         case "audio": {
           const b64 = msg.audio_event?.audio_base_64;
@@ -211,21 +280,22 @@ Deno.serve(async (req) => {
           if (!firstAgentAudioSent) {
             try {
               const raw = atob(b64);
-              const hex = Array.from(raw.slice(0, 32)).map(c => c.charCodeAt(0).toString(16).padStart(2, "0")).join(" ");
+              const hex = Array.from(raw.slice(0, 32)).map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join(" ");
               console.log(`[bridge ${conversationId}] EL audio first 32 bytes hex: ${hex} (b64 len=${b64.length}, raw len=${raw.length})`);
             } catch {}
           }
-          // Raw µ-law passthrough — EL outputs ulaw_8000, Telnyx wants µ-law base64.
-          // stream_id is REQUIRED on outbound frames in bidirectional mode — without it
-          // Telnyx silently drops the frame and closes the WS after the greeting.
+
+          const telnyxPayload = transformELAudioForTelnyx(b64);
           telnyxSocket.send(JSON.stringify({
             event: "media",
             stream_id: telnyxStreamId,
-            media: { payload: b64 },
+            media: { payload: telnyxPayload },
           }));
           if (!firstAgentAudioSent) {
             firstAgentAudioSent = true;
-            console.log(`[bridge ${conversationId}] FIRST agent audio sent to Telnyx`);
+            console.log(
+              `[bridge ${conversationId}] FIRST agent audio sent to Telnyx (${elAgentOutputAudioFormat || "pcm_16000"} -> Telnyx PCMU 8k)`,
+            );
           }
           break;
         }
@@ -329,7 +399,7 @@ Deno.serve(async (req) => {
           firstCallerAudioLogged = true;
           try {
             const raw = atob(payload);
-            const hex = Array.from(raw.slice(0, 32)).map(c => c.charCodeAt(0).toString(16).padStart(2, "0")).join(" ");
+            const hex = Array.from(raw.slice(0, 32)).map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join(" ");
             console.log(`[bridge ${conversationId}] FIRST caller audio from Telnyx, first 32 bytes hex: ${hex} (b64 len=${payload.length}, raw len=${raw.length})`);
           } catch {
             console.log(`[bridge ${conversationId}] FIRST caller audio received from Telnyx`);
