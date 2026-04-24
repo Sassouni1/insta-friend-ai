@@ -130,7 +130,7 @@ export function VoiceAgent() {
         const latencyMs = computeLatency();
         pendingAgentLatencyRef.current = latencyMs;
         setTranscript((prev) => [...prev, { role: "agent", text: directText, timestamp: new Date(), latencyMs: latencyMs ?? undefined }]);
-        persistEntry("agent", directText, latencyMs ?? undefined);
+        persistEntry("agent", text, latencyMs ?? undefined);
       } else if (message.type === "agent_response_correction") {
         const text = message.agent_response_correction_event?.corrected_agent_response;
         if (text) {
@@ -147,6 +147,10 @@ export function VoiceAgent() {
       setError(errMsg);
       setDiag((d) => ({ ...d, lastError: errMsg }));
       addDiagEvent("error", errMsg);
+    },
+    onDebug: (event: any) => {
+      console.log("[onDebug]", event);
+      addDiagEvent("sdk_debug", JSON.stringify(event).slice(0, 120));
     },
     onModeChange: (mode: any) => {
       console.log("[onModeChange]", mode);
@@ -180,13 +184,45 @@ export function VoiceAgent() {
 
     try {
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      audioContext.resume();
-    } catch (e) { /* non-critical */ }
-    const silentAudio = new Audio();
-    silentAudio.play().catch(() => {});
+      await audioContext.resume();
+    } catch {
+      // non-critical
+    }
 
     try {
-      await navigator.mediaDevices.getUserMedia({ audio: true });
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioInputs = devices.filter((device) => device.kind === "audioinput");
+      const preferredInputId = audioInputs[0]?.deviceId;
+
+      if (!preferredInputId) {
+        throw new Error("No microphone detected. Connect a microphone and allow browser mic access, then try again.");
+      }
+
+      addDiagEvent("media_devices", `audio inputs: ${audioInputs.length}`);
+
+      let preflightStream: MediaStream | null = null;
+      try {
+        preflightStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: { exact: preferredInputId },
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+      } catch (deviceErr) {
+        console.warn("Specific mic preflight failed, retrying with default audio device", deviceErr);
+        addDiagEvent("media_retry", "specific input failed, retrying default input");
+        preflightStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+      }
+
+      preflightStream.getTracks().forEach((track) => track.stop());
 
       const { data, error: fnError } = await supabase.functions.invoke(
         "elevenlabs-conversation-token"
@@ -225,7 +261,6 @@ export function VoiceAgent() {
       setDiag((d) => ({ ...d, keySource: data.key_source }));
       console.log(`[Session] Starting WebRTC with key source: ${data.key_source}, agent: ${data.agent_id}`);
 
-      // Create conversation record for transcript persistence
       try {
         const { data: convRow, error: convErr } = await supabase
           .from("conversations")
@@ -241,7 +276,9 @@ export function VoiceAgent() {
       }
 
       await conversation.startSession({
+        connectionType: "webrtc",
         conversationToken: data.token,
+        inputDeviceId: preferredInputId,
         dynamicVariables: {
           first_name: "",
           caller_name: "",
@@ -265,14 +302,12 @@ export function VoiceAgent() {
         console.warn("setVolume failed (non-critical):", e);
       }
 
-      // Start VAD loop: anchor latency at the moment user STARTS speaking
-      const SPEECH_THRESHOLD = 0.04;         // input volume above this = speech
-      const SILENCE_DURATION_MS = 600;       // quiet this long = turn ended (reset for next utterance)
+      const SPEECH_THRESHOLD = 0.04;
+      const SILENCE_DURATION_MS = 600;
       vadIntervalRef.current = window.setInterval(() => {
         try {
           const vol = (conversation as any).getInputVolume?.() ?? 0;
           const now = Date.now();
-          // Ignore mic input while Sam is speaking (prevents echo/bleed from anchoring the timer)
           const agentSpeaking = (conversation as any).isSpeaking === true;
           if (agentSpeaking) {
             userStartedAtRef.current = null;
@@ -284,22 +319,27 @@ export function VoiceAgent() {
             lastVoiceAtRef.current = now;
             if (!userSpeakingRef.current) {
               userSpeakingRef.current = true;
-              // Anchor latency timer to the FIRST voice frame of this utterance
               if (userStartedAtRef.current === null) {
                 userStartedAtRef.current = now;
               }
             }
           } else if (userSpeakingRef.current && lastVoiceAtRef.current) {
-            // Mark turn ended after sustained silence so next utterance gets a fresh anchor
             if (now - lastVoiceAtRef.current >= SILENCE_DURATION_MS) {
               userSpeakingRef.current = false;
             }
           }
-        } catch { /* ignore */ }
+        } catch {
+          // ignore
+        }
       }, 50);
     } catch (err: any) {
       console.error("Failed to start conversation:", err);
-      setError(err.message || "Failed to connect. Please try again.");
+      const message = err?.message || "Failed to connect. Please try again.";
+      if (/Requested device not found|NotFoundError/i.test(message)) {
+        setError("No usable microphone was found. Check browser mic permissions, reconnect your mic, then try again.");
+      } else {
+        setError(message);
+      }
     } finally {
       setIsConnecting(false);
     }
