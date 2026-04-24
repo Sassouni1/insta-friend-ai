@@ -94,7 +94,7 @@ Deno.serve(async (req) => {
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
   let bridgeClosed = false;
-  const pendingTelnyxAudio: Uint8Array[] = [];
+  const pendingTelnyxAudio: string[] = [];
 
   console.log(`[bridge ${conversationId}] params tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
 
