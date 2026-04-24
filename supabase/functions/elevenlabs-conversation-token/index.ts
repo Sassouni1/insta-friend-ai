@@ -168,10 +168,10 @@ const SAM_CONVERSATION_CONFIG = {
     prompt: {
       prompt: SAM_SCRIPT,
     },
-    first_message: "Hey — is this {{first_name}}?",
+    first_message: "Hey — thanks for reaching out. Who do I have the pleasure of speaking with?",
     language: "en",
     dynamic_variables: {
-      first_name: "there",
+      first_name: "",
       caller_name: "",
       caller_phone: "",
       caller_email: "",
@@ -366,9 +366,19 @@ async function runPipeline(apiKey: string, keySource: string) {
     return { success: false, diagnostics, key_source: keySource, error: `Conversation token failed: ${tokenOp.error_text}` };
   }
 
+  // Step 6: Get signed URL (WebSocket) for more compatible browser fallback / default web transport
+  const signedUrlOp = await elevenLabsOp(
+    "get_signed_url",
+    `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${agentId}`,
+    { headers },
+    "convai_conversation"
+  );
+  diagnostics.push(signedUrlOp);
+
   return {
     success: true,
     token: tokenOp.data.token,
+    signed_url: signedUrlOp.ok ? signedUrlOp.data.signed_url : null,
     agent_id: agentId,
     key_source: keySource,
     diagnostics,
@@ -416,6 +426,7 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({
         token: result.token,
+        signed_url: result.signed_url,
         agent_id: result.agent_id,
         key_source: result.key_source,
       }),
