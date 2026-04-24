@@ -1,9 +1,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { corsHeaders, jsonResponse } from "../_shared/cors.ts";
+import { telnyxDial } from "../_shared/telnyx.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const BRIDGE_WS_URL = `wss://${new URL(SUPABASE_URL).host.replace(".supabase.co", ".functions.supabase.co")}/telnyx-bridge`;
 
 const DEFAULT_DELAY_SECONDS = 120; // 2 minutes
 
@@ -21,6 +23,90 @@ function pickName(body: any): string | null {
   const last = body?.last_name || body?.contact?.lastName || "";
   const full = `${first} ${last}`.trim();
   return full || null;
+}
+
+async function fireCall(scheduledId: string) {
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+  // Atomically claim the row to avoid double-fire
+  const { data: claimed } = await supabase
+    .from("scheduled_calls")
+    .update({ status: "processing", attempts: 1 })
+    .eq("id", scheduledId)
+    .eq("status", "pending")
+    .select("id, tenant_id, lead_phone, lead_name")
+    .maybeSingle();
+
+  if (!claimed) {
+    console.log(`[opt-in] call ${scheduledId} already processed or cancelled`);
+    return;
+  }
+
+  try {
+    const { data: phoneRow } = await supabase
+      .from("phone_numbers")
+      .select("e164_number, telnyx_connection_id")
+      .eq("tenant_id", claimed.tenant_id)
+      .eq("active", true)
+      .limit(1)
+      .maybeSingle();
+
+    if (!phoneRow?.e164_number || !phoneRow?.telnyx_connection_id) {
+      throw new Error("no active phone number for tenant");
+    }
+
+    const { data: convRow, error: convErr } = await supabase
+      .from("conversations")
+      .insert({
+        tenant_id: claimed.tenant_id,
+        caller_phone: claimed.lead_phone,
+        direction: "outbound",
+      })
+      .select("id")
+      .single();
+
+    if (convErr || !convRow) throw new Error(`conversation insert failed: ${convErr?.message}`);
+
+    const streamUrl =
+      `${BRIDGE_WS_URL}?conv=${convRow.id}&tenant=${claimed.tenant_id}&caller=${encodeURIComponent(claimed.lead_phone)}` +
+      (claimed.lead_name ? `&name=${encodeURIComponent(claimed.lead_name)}` : "");
+
+    const dialRes = await telnyxDial({
+      to: claimed.lead_phone,
+      from: phoneRow.e164_number,
+      connection_id: phoneRow.telnyx_connection_id,
+      stream_url: streamUrl,
+      stream_track: "both_tracks",
+    });
+
+    if (!dialRes.ok) {
+      const txt = await dialRes.text();
+      throw new Error(`telnyx dial ${dialRes.status}: ${txt.slice(0, 200)}`);
+    }
+
+    const dialData = await dialRes.json();
+    const callControlId = dialData?.data?.call_control_id;
+    if (callControlId) {
+      await supabase
+        .from("conversations")
+        .update({ telnyx_call_control_id: callControlId })
+        .eq("id", convRow.id);
+    }
+
+    await supabase
+      .from("scheduled_calls")
+      .update({ status: "dialed", conversation_id: convRow.id, last_error: null })
+      .eq("id", scheduledId);
+
+    console.log(`[opt-in] dialed ${claimed.lead_phone} for scheduled ${scheduledId}`);
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    console.error(`[opt-in] fire failed for ${scheduledId}:`, msg);
+    await supabase
+      .from("scheduled_calls")
+      .update({ status: "failed", last_error: msg.slice(0, 500) })
+      .eq("id", scheduledId);
+  }
 }
 
 serve(async (req) => {
@@ -41,22 +127,15 @@ serve(async (req) => {
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-  const { data: tenant, error: tenantErr } = await supabase
+  const { data: tenant } = await supabase
     .from("tenants")
     .select("id, webhook_secret, active")
     .eq("ghl_location_id", locationId)
     .maybeSingle();
 
-  if (tenantErr || !tenant) {
-    console.warn("[opt-in] tenant not found for location", locationId);
-    return jsonResponse({ error: "tenant not found" }, 404);
-  }
-  if (tenant.webhook_secret !== secret) {
-    return jsonResponse({ error: "invalid secret" }, 401);
-  }
-  if (!tenant.active) {
-    return jsonResponse({ error: "tenant inactive" }, 403);
-  }
+  if (!tenant) return jsonResponse({ error: "tenant not found" }, 404);
+  if (tenant.webhook_secret !== secret) return jsonResponse({ error: "invalid secret" }, 401);
+  if (!tenant.active) return jsonResponse({ error: "tenant inactive" }, 403);
 
   const delaySeconds = Number(body?.delay_seconds ?? DEFAULT_DELAY_SECONDS);
   const fireAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
@@ -74,11 +153,29 @@ serve(async (req) => {
     .select("id, fire_at")
     .single();
 
-  if (insErr) {
+  if (insErr || !row) {
     console.error("[opt-in] insert failed", insErr);
     return jsonResponse({ error: "scheduling failed" }, 500);
   }
 
-  console.log(`[opt-in] scheduled call ${row.id} for ${phone} at ${row.fire_at}`);
+  console.log(`[opt-in] scheduled ${row.id} for ${phone}, firing in ${delaySeconds}s`);
+
+  // Background task: wait, then dial. EdgeRuntime.waitUntil keeps the runtime alive.
+  const task = new Promise<void>((resolve) => {
+    setTimeout(async () => {
+      await fireCall(row.id);
+      resolve();
+    }, delaySeconds * 1000);
+  });
+
+  // @ts-ignore EdgeRuntime is a Deno deploy global
+  if (typeof EdgeRuntime !== "undefined" && (EdgeRuntime as any).waitUntil) {
+    // @ts-ignore
+    EdgeRuntime.waitUntil(task);
+  } else {
+    // Fallback: don't await — function will return but may be cut short locally
+    task.catch((e) => console.error("[opt-in] background error", e));
+  }
+
   return jsonResponse({ ok: true, scheduled_id: row.id, fire_at: row.fire_at });
 });
