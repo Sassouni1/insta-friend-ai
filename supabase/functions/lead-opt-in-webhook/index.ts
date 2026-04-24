@@ -7,7 +7,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const BRIDGE_WS_URL = `wss://${new URL(SUPABASE_URL).host.replace(".supabase.co", ".functions.supabase.co")}/telnyx-bridge`;
 
-const DEFAULT_DELAY_SECONDS = 120; // 2 minutes
+const DEFAULT_DELAY_SECONDS = 0; // fire immediately on opt-in
 
 function pickPhone(body: any): string | null {
   const candidates = [body?.phone, body?.lead_phone, body?.contact?.phone, body?.full_phone];
