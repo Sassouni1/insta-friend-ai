@@ -93,13 +93,19 @@ Deno.serve(async (req) => {
   // ElevenLabs → Telnyx
   elSocket.onopen = () => {
     console.log(`[bridge ${conversationId}] EL open`);
+    const firstName = callerName.trim().split(/\s+/)[0] || "";
     elSocket.send(
       JSON.stringify({
         type: "conversation_initiation_client_data",
         dynamic_variables: {
           tenant_id: tenantId,
-          caller_phone: callerPhone,
           conversation_id: conversationId,
+          caller_phone: callerPhone,
+          caller_name: callerName,
+          caller_email: callerEmail,
+          first_name: firstName,
+          company_name: companyName,
+          tenant_timezone: tenantTimezone,
         },
       }),
     );
