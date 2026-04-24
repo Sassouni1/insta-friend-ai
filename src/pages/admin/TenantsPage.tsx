@@ -6,9 +6,12 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Pencil, Trash2, Link2, Loader2 } from "lucide-react";
+import { Plus, Pencil, Trash2, Link2, Loader2, RefreshCw } from "lucide-react";
+
+interface CrmCalendar { id: string; name: string; isActive?: boolean }
 
 interface Tenant {
   id: string;
@@ -31,6 +34,22 @@ export default function TenantsPage() {
   const [editing, setEditing] = useState<Tenant | null>(null);
   const [form, setForm] = useState(empty);
   const [connecting, setConnecting] = useState(false);
+  const [calendars, setCalendars] = useState<CrmCalendar[]>([]);
+  const [loadingCalendars, setLoadingCalendars] = useState(false);
+
+  const loadCalendars = async (tenantId: string) => {
+    setLoadingCalendars(true);
+    setCalendars([]);
+    const { data, error } = await supabase.functions.invoke("ghl-list-calendars", {
+      body: { tenant_id: tenantId },
+    });
+    if (error) {
+      toast({ variant: "destructive", title: "Could not load calendars", description: error.message });
+    } else {
+      setCalendars(data?.calendars || []);
+    }
+    setLoadingCalendars(false);
+  };
 
   const connectAgency = async () => {
     setConnecting(true);
@@ -60,7 +79,7 @@ export default function TenantsPage() {
 
   useEffect(() => { load(); }, []);
 
-  const openNew = () => { setEditing(null); setForm(empty); setOpen(true); };
+  const openNew = () => { setEditing(null); setForm(empty); setCalendars([]); setOpen(true); };
   const openEdit = (t: Tenant) => {
     setEditing(t);
     setForm({
@@ -71,7 +90,9 @@ export default function TenantsPage() {
       timezone: t.timezone,
       active: t.active,
     });
+    setCalendars([]);
     setOpen(true);
+    if (t.ghl_api_token && t.ghl_location_id) loadCalendars(t.id);
   };
 
   const save = async () => {
@@ -122,7 +143,33 @@ export default function TenantsPage() {
               <div><Label>Name</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
               <div><Label>GoHighLevel location ID</Label><Input value={form.ghl_location_id} onChange={(e) => setForm({ ...form, ghl_location_id: e.target.value })} /></div>
               <div><Label>GoHighLevel API token (Private Integration)</Label><Input type="password" value={form.ghl_api_token} onChange={(e) => setForm({ ...form, ghl_api_token: e.target.value })} /></div>
-              <div><Label>GoHighLevel calendar ID</Label><Input value={form.ghl_calendar_id} onChange={(e) => setForm({ ...form, ghl_calendar_id: e.target.value })} /></div>
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <Label>Calendar</Label>
+                  {editing && (
+                    <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => loadCalendars(editing.id)} disabled={loadingCalendars}>
+                      {loadingCalendars ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                    </Button>
+                  )}
+                </div>
+                {calendars.length > 0 ? (
+                  <Select value={form.ghl_calendar_id} onValueChange={(v) => setForm({ ...form, ghl_calendar_id: v })}>
+                    <SelectTrigger><SelectValue placeholder="Select a calendar" /></SelectTrigger>
+                    <SelectContent>
+                      {calendars.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>{c.name}{c.isActive === false ? " (inactive)" : ""}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    placeholder={loadingCalendars ? "Loading calendars..." : (editing ? "No calendars found — paste ID manually" : "Save tenant first, then pick a calendar")}
+                    value={form.ghl_calendar_id}
+                    onChange={(e) => setForm({ ...form, ghl_calendar_id: e.target.value })}
+                    disabled={loadingCalendars}
+                  />
+                )}
+              </div>
               <div><Label>Timezone (IANA)</Label><Input value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} /></div>
               <div className="flex items-center gap-2"><input type="checkbox" id="active" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} /><Label htmlFor="active">Active</Label></div>
             </div>
