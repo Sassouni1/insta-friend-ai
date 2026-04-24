@@ -118,6 +118,10 @@ Deno.serve(async (req) => {
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
   let bridgeClosed = false;
+  // Half-duplex echo gate: when EL is speaking, drop inbound caller frames
+  // (Telnyx bidirectional RTP loops our TTS back into the inbound track).
+  let agentSpeakingUntil = 0;
+  const AGENT_SPEAK_TAIL_MS = 600;
   const pendingTelnyxAudio: string[] = [];
 
   console.log(`[bridge ${conversationId}] params tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
@@ -291,6 +295,12 @@ Deno.serve(async (req) => {
             stream_id: telnyxStreamId,
             media: { payload: telnyxPayload },
           }));
+          // Mark agent as speaking — playback duration ≈ samples / 8000 * 1000 ms.
+          // Telnyx PCMU is 8kHz mono so payload byte count == sample count.
+          try {
+            const playoutMs = Math.ceil((atob(telnyxPayload).length / 8000) * 1000);
+            agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + playoutMs + AGENT_SPEAK_TAIL_MS);
+          } catch {}
           if (!firstAgentAudioSent) {
             firstAgentAudioSent = true;
             console.log(
@@ -342,6 +352,7 @@ Deno.serve(async (req) => {
         }
 
         case "interruption":
+          agentSpeakingUntil = 0;
           if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
             telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
           }
@@ -420,6 +431,15 @@ Deno.serve(async (req) => {
           console.log(`[bridge ${conversationId}] Telnyx media frames: ${telnyxMediaCount}`);
         }
         if (!elSocket && !elConnecting) initElSocket();
+        // Echo gate: while agent is speaking (and short tail after), drop inbound
+        // frames so EL doesn't transcribe its own TTS bleeding through Telnyx RTP.
+        const muted = Date.now() < agentSpeakingUntil;
+        if (muted) {
+          if (telnyxMediaCount % 250 === 0) {
+            console.log(`[bridge ${conversationId}] echo-gate: dropping inbound (agent speaking)`);
+          }
+          break;
+        }
         if (elReady && elSocket?.readyState === WebSocket.OPEN) {
           sendUserAudioToEL(payload);
         } else {
