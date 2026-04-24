@@ -431,6 +431,15 @@ Deno.serve(async (req) => {
           console.log(`[bridge ${conversationId}] Telnyx media frames: ${telnyxMediaCount}`);
         }
         if (!elSocket && !elConnecting) initElSocket();
+        // Echo gate: while agent is speaking (and short tail after), drop inbound
+        // frames so EL doesn't transcribe its own TTS bleeding through Telnyx RTP.
+        const muted = Date.now() < agentSpeakingUntil;
+        if (muted) {
+          if (telnyxMediaCount % 250 === 0) {
+            console.log(`[bridge ${conversationId}] echo-gate: dropping inbound (agent speaking)`);
+          }
+          break;
+        }
         if (elReady && elSocket?.readyState === WebSocket.OPEN) {
           sendUserAudioToEL(payload);
         } else {
