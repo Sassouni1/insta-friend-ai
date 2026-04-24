@@ -1,4 +1,4 @@
-import { useConversation } from "@elevenlabs/react";
+import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Mic, MicOff, Phone, PhoneOff, Bug } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -31,7 +31,7 @@ interface DiagnosticInfo {
   vadScore?: number;
 }
 
-export function VoiceAgent() {
+function VoiceAgentInner() {
   const [isConnecting, setIsConnecting] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
