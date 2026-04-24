@@ -170,6 +170,16 @@ const SAM_CONVERSATION_CONFIG = {
     },
     first_message: "Hey — is this {{first_name}}?",
     language: "en",
+    dynamic_variables: {
+      first_name: "there",
+      caller_name: "",
+      caller_phone: "",
+      caller_email: "",
+      company_name: "Hair Systems",
+      tenant_timezone: "America/Los_Angeles",
+      tenant_id: "",
+      conversation_id: "",
+    },
   },
   turn: {
     mode: "turn",
