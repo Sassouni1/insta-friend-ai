@@ -207,13 +207,10 @@ Deno.serve(async (req) => {
             console.log(`[bridge ${conversationId}] dropping EL audio — no Telnyx stream_id yet`);
             break;
           }
-          const pcm16k = base64ToInt16(b64);
-          const pcm8k = downsample16to8(pcm16k);
-          const mulaw = pcm16ToMulaw(pcm8k);
-          const payload = uint8ToBase64(mulaw);
+          // Raw µ-law passthrough — EL outputs ulaw_8000, Telnyx wants µ-law base64.
           telnyxSocket.send(JSON.stringify({
             event: "media",
-            media: { payload },
+            media: { payload: b64 },
           }));
           if (!firstAgentAudioSent) {
             firstAgentAudioSent = true;
