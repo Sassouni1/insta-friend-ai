@@ -98,6 +98,9 @@ Deno.serve(async (req) => {
 
   let telnyxStreamId: string | null = null;
   let elReady = false;
+  let firstCallerAudioLogged = false;
+  let firstAgentAudioSent = false;
+  let telnyxMediaCount = 0;
   const pendingTelnyxAudio: Uint8Array[] = [];
 
   const closeBoth = (reason: string) => {
@@ -196,6 +199,7 @@ Objections:
     switch (msg.type) {
       case "conversation_initiation_metadata":
         elReady = true;
+        console.log(`[bridge ${conversationId}] EL ready — flushing ${pendingTelnyxAudio.length} buffered frames`);
         // Flush any buffered audio
         for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
         pendingTelnyxAudio.length = 0;
@@ -203,17 +207,26 @@ Objections:
 
       case "audio": {
         const b64 = msg.audio_event?.audio_base_64;
-        if (!b64 || !telnyxStreamId) break;
+        if (!b64) break;
+        if (!telnyxStreamId) {
+          console.log(`[bridge ${conversationId}] dropping EL audio — no Telnyx stream_id yet`);
+          break;
+        }
         // EL sends PCM 16k base64. Downsample → μ-law 8k → base64 → Telnyx media frame.
         const pcm16k = base64ToInt16(b64);
         const pcm8k = downsample16to8(pcm16k);
         const mulaw = pcm16ToMulaw(pcm8k);
         const payload = uint8ToBase64(mulaw);
+        // Telnyx outbound media frame: spec is { event: "media", media: { payload } }
+        // Do NOT include stream_id — Telnyx rejects/ignores frames with extra fields.
         telnyxSocket.send(JSON.stringify({
           event: "media",
-          stream_id: telnyxStreamId,
           media: { payload },
         }));
+        if (!firstAgentAudioSent) {
+          firstAgentAudioSent = true;
+          console.log(`[bridge ${conversationId}] FIRST agent audio sent to Telnyx`);
+        }
         break;
       }
 
@@ -250,7 +263,8 @@ Objections:
 
       case "interruption":
         if (telnyxStreamId) {
-          telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
+          // Telnyx clear frame — no stream_id field per spec.
+          telnyxSocket.send(JSON.stringify({ event: "clear" }));
         }
         break;
     }
@@ -273,17 +287,32 @@ Objections:
 
   telnyxSocket.onmessage = (ev) => {
     let frame: any;
-    try { frame = JSON.parse(ev.data as string); } catch { return; }
+    try { frame = JSON.parse(ev.data as string); } catch {
+      console.log(`[bridge ${conversationId}] Telnyx non-JSON frame`);
+      return;
+    }
 
     switch (frame.event) {
+      case "connected":
+        console.log(`[bridge ${conversationId}] Telnyx connected frame: ${JSON.stringify(frame).slice(0, 300)}`);
+        break;
+
       case "start":
         telnyxStreamId = frame.stream_id || frame.start?.stream_id;
-        console.log(`[bridge ${conversationId}] Telnyx stream started: ${telnyxStreamId}`);
+        console.log(`[bridge ${conversationId}] Telnyx START stream_id=${telnyxStreamId} payload=${JSON.stringify(frame).slice(0, 400)}`);
         break;
 
       case "media": {
         const payload = frame.media?.payload;
         if (!payload) break;
+        telnyxMediaCount++;
+        if (!firstCallerAudioLogged) {
+          firstCallerAudioLogged = true;
+          console.log(`[bridge ${conversationId}] FIRST caller audio received from Telnyx`);
+        }
+        if (telnyxMediaCount % 250 === 0) {
+          console.log(`[bridge ${conversationId}] Telnyx media frames: ${telnyxMediaCount}`);
+        }
         const mulaw = base64ToUint8(payload);
         if (elReady && elSocket.readyState === WebSocket.OPEN) {
           sendUserAudioToEL(mulaw);
@@ -294,8 +323,16 @@ Objections:
       }
 
       case "stop":
+        console.log(`[bridge ${conversationId}] Telnyx STOP after ${telnyxMediaCount} media frames`);
         closeBoth("Telnyx stream stopped");
         break;
+
+      case "error":
+        console.error(`[bridge ${conversationId}] Telnyx ERROR frame: ${JSON.stringify(frame)}`);
+        break;
+
+      default:
+        console.log(`[bridge ${conversationId}] Telnyx unknown event: ${frame.event}`);
     }
   };
 
