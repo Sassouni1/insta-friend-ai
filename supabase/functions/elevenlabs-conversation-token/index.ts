@@ -64,6 +64,7 @@ Never move forward just because you heard a sound that might be agreement.
 - If silence continues about 20 more seconds after that, end the call naturally.
 - If voicemail or a beep is detected, end the call.
 - After booking, thank them and end.
+- Never ask "are you still there" or send a silence nudge less than 15 seconds after your own last question.
 
 === PRIMARY GOAL ===
 Your goal is to book a consultation for a prospect interested in hair systems or hair loss solutions.
@@ -173,7 +174,7 @@ const SAM_CONVERSATION_CONFIG = {
   },
   turn: {
     mode: "turn",
-    turn_timeout: 1,
+    turn_timeout: 4,
     turn_eagerness: "eager",
   },
   asr: {
