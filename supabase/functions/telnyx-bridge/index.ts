@@ -49,6 +49,10 @@ Deno.serve(async (req) => {
   const conversationId = url.searchParams.get("conv");
   const tenantId = url.searchParams.get("tenant");
   const callerPhone = url.searchParams.get("caller") || "";
+  const callerName = url.searchParams.get("name") || "";
+  const callerEmail = url.searchParams.get("email") || "";
+  const companyName = url.searchParams.get("company") || "";
+  const tenantTimezone = url.searchParams.get("tz") || "";
 
   if (!conversationId || !tenantId) {
     return new Response("missing conv or tenant", { status: 400 });
