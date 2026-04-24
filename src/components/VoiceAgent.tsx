@@ -271,7 +271,7 @@ export function VoiceAgent() {
       await conversation.startSession({
         connectionType: "webrtc",
         conversationToken: data.token,
-        inputDeviceId: preferredInputId,
+        ...(preferredInputId ? { inputDeviceId: preferredInputId } : {}),
         dynamicVariables: {
           first_name: "",
           caller_name: "",
