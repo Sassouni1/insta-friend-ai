@@ -17,6 +17,3 @@ verify_jwt = false
 
 [functions.lead-opt-in-webhook]
 verify_jwt = false
-
-[functions.scheduled-calls-worker]
-verify_jwt = false
