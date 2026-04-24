@@ -149,14 +149,14 @@ Deno.serve(async (req) => {
 
     socket.onopen = () => {
       elConnecting = false;
-      console.log(`[bridge ${conversationId}] EL open — pinning pcm_16000 both directions`);
+      console.log(`[bridge ${conversationId}] EL open — pinning ulaw_8000 both directions`);
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
       socket.send(
         JSON.stringify({
           type: "conversation_initiation_client_data",
           conversation_config_override: {
-            asr: { user_input_audio_format: "pcm_16000" },
-            tts: { agent_output_audio_format: "pcm_16000" },
+            asr: { user_input_audio_format: "ulaw_8000" },
+            tts: { agent_output_audio_format: "ulaw_8000" },
             conversation: {
               client_events: [
                 "audio",
