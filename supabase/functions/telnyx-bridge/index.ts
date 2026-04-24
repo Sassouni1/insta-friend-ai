@@ -352,6 +352,7 @@ Deno.serve(async (req) => {
         }
 
         case "interruption":
+          agentSpeakingUntil = 0;
           if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
             telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
           }
