@@ -124,16 +124,13 @@ Deno.serve(async (req) => {
       .then(() => {});
   };
 
-  function sendUserAudioToEL(mulawBytes: Uint8Array) {
+  function sendUserAudioToEL(mulawB64: string) {
     if (!elSocket || elSocket.readyState !== WebSocket.OPEN) return;
-    const pcm8k = mulawToPcm16(mulawBytes);
-    const pcm16k = upsample8to16(pcm8k);
-    elSocket.send(JSON.stringify({
-      user_audio_chunk: int16ToBase64(pcm16k),
-    }));
+    // Raw µ-law 8kHz passthrough — EL agent is configured for ulaw_8000.
+    elSocket.send(JSON.stringify({ user_audio_chunk: mulawB64 }));
     if (firstUserChunkSentAt === null) {
       firstUserChunkSentAt = Date.now();
-      console.log(`[bridge ${conversationId}] FIRST user_audio_chunk sent to EL (pcm_16000)`);
+      console.log(`[bridge ${conversationId}] FIRST user_audio_chunk sent to EL (ulaw_8000 raw passthrough)`);
       vadWarnTimer = setTimeout(() => {
         if (!firstVadLogged) {
           console.error(`[bridge ${conversationId}] WARN — 4s of audio sent, no vad_score from EL. Format mismatch likely.`);
