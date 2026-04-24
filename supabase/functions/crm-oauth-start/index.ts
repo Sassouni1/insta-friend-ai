@@ -9,8 +9,6 @@ const GHL_CLIENT_ID = Deno.env.get("GHL_CLIENT_ID")!;
 // Scopes needed: list locations, generate per-location tokens, manage contacts/calendars.
 const SCOPES = [
   "locations.readonly",
-  "oauth.write",
-  "oauth.readonly",
   "contacts.readonly",
   "contacts.write",
   "calendars.readonly",
