@@ -195,6 +195,7 @@ Deno.serve(async (req) => {
       switch (msg.type) {
         case "conversation_initiation_metadata":
           elReady = true;
+          console.log(`[bridge ${conversationId}] EL META: ${JSON.stringify(msg).slice(0, 800)}`);
           console.log(`[bridge ${conversationId}] EL ready — flushing ${pendingTelnyxAudio.length} buffered frames`);
           for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
           pendingTelnyxAudio.length = 0;
@@ -206,6 +207,13 @@ Deno.serve(async (req) => {
           if (!telnyxStreamId) {
             console.log(`[bridge ${conversationId}] dropping EL audio — no Telnyx stream_id yet`);
             break;
+          }
+          if (!firstAgentAudioSent) {
+            try {
+              const raw = atob(b64);
+              const hex = Array.from(raw.slice(0, 32)).map(c => c.charCodeAt(0).toString(16).padStart(2, "0")).join(" ");
+              console.log(`[bridge ${conversationId}] EL audio first 32 bytes hex: ${hex} (b64 len=${b64.length}, raw len=${raw.length})`);
+            } catch {}
           }
           // Raw µ-law passthrough — EL outputs ulaw_8000, Telnyx wants µ-law base64.
           // stream_id is REQUIRED on outbound frames in bidirectional mode — without it
@@ -319,7 +327,13 @@ Deno.serve(async (req) => {
         telnyxMediaCount++;
         if (!firstCallerAudioLogged) {
           firstCallerAudioLogged = true;
-          console.log(`[bridge ${conversationId}] FIRST caller audio received from Telnyx`);
+          try {
+            const raw = atob(payload);
+            const hex = Array.from(raw.slice(0, 32)).map(c => c.charCodeAt(0).toString(16).padStart(2, "0")).join(" ");
+            console.log(`[bridge ${conversationId}] FIRST caller audio from Telnyx, first 32 bytes hex: ${hex} (b64 len=${payload.length}, raw len=${raw.length})`);
+          } catch {
+            console.log(`[bridge ${conversationId}] FIRST caller audio received from Telnyx`);
+          }
         }
         if (telnyxMediaCount % 250 === 0) {
           console.log(`[bridge ${conversationId}] Telnyx media frames: ${telnyxMediaCount}`);
