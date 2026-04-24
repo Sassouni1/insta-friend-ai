@@ -87,7 +87,7 @@ async function placeDial(opts: {
     stream_url: streamUrl,
     stream_track: "both_tracks",
     timeout_secs: RING_TIMEOUT_SECS,
-  } as any);
+  });
 
   if (!dialRes.ok) {
     const txt = await dialRes.text();
