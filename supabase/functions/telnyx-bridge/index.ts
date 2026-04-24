@@ -150,11 +150,27 @@ Deno.serve(async (req) => {
 
     socket.onopen = () => {
       elConnecting = false;
-      console.log(`[bridge ${conversationId}] EL open`);
+      console.log(`[bridge ${conversationId}] EL open — pinning pcm_16000 both directions`);
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
       socket.send(
         JSON.stringify({
           type: "conversation_initiation_client_data",
+          conversation_config_override: {
+            asr: { user_input_audio_format: "pcm_16000" },
+            tts: { agent_output_audio_format: "pcm_16000" },
+            conversation: {
+              client_events: [
+                "audio",
+                "interruption",
+                "agent_response",
+                "user_transcript",
+                "agent_response_correction",
+                "agent_tool_response",
+                "vad_score",
+                "ping",
+              ],
+            },
+          },
           dynamic_variables: {
             tenant_id: tenantId,
             conversation_id: conversationId,
