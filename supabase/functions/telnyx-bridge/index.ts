@@ -98,6 +98,9 @@ Deno.serve(async (req) => {
   let elReady = false;
   let firstCallerAudioLogged = false;
   let firstAgentAudioSent = false;
+  let firstUserChunkSentAt: number | null = null;
+  let firstVadLogged = false;
+  let vadWarnTimer: number | null = null;
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
   let bridgeClosed = false;
@@ -138,6 +141,15 @@ Deno.serve(async (req) => {
     elSocket.send(JSON.stringify({
       user_audio_chunk: int16ToBase64(pcm16k),
     }));
+    if (firstUserChunkSentAt === null) {
+      firstUserChunkSentAt = Date.now();
+      console.log(`[bridge ${conversationId}] FIRST user_audio_chunk sent to EL (pcm_16000)`);
+      vadWarnTimer = setTimeout(() => {
+        if (!firstVadLogged) {
+          console.error(`[bridge ${conversationId}] WARN — 4s of audio sent, no vad_score from EL. Format mismatch likely.`);
+        }
+      }, 4000) as unknown as number;
+    }
   }
 
   function initElSocket() {
@@ -150,11 +162,27 @@ Deno.serve(async (req) => {
 
     socket.onopen = () => {
       elConnecting = false;
-      console.log(`[bridge ${conversationId}] EL open`);
+      console.log(`[bridge ${conversationId}] EL open — pinning pcm_16000 both directions`);
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
       socket.send(
         JSON.stringify({
           type: "conversation_initiation_client_data",
+          conversation_config_override: {
+            asr: { user_input_audio_format: "pcm_16000" },
+            tts: { agent_output_audio_format: "pcm_16000" },
+            conversation: {
+              client_events: [
+                "audio",
+                "interruption",
+                "agent_response",
+                "user_transcript",
+                "agent_response_correction",
+                "agent_tool_response",
+                "vad_score",
+                "ping",
+              ],
+            },
+          },
           dynamic_variables: {
             tenant_id: tenantId,
             conversation_id: conversationId,
@@ -237,6 +265,16 @@ Deno.serve(async (req) => {
             event_id: msg.ping_event?.event_id,
           }));
           break;
+
+        case "vad_score": {
+          const score = msg.vad_score_event?.vad_score ?? msg.vad_score;
+          if (!firstVadLogged && typeof score === "number") {
+            firstVadLogged = true;
+            if (vadWarnTimer) clearTimeout(vadWarnTimer);
+            console.log(`[bridge ${conversationId}] FIRST vad_score=${score} — EL is decoding our audio`);
+          }
+          break;
+        }
 
         case "interruption":
           if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
