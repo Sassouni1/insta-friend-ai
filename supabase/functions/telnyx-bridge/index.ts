@@ -4,8 +4,8 @@ import {
   base64ToUint8,
   downsample16to8,
   int16ToBase64,
-  mulawToPcm16,
   pcm16ToMulaw,
+  mulawToPcm16,
   uint8ToBase64,
   upsample8to16,
 } from "../_shared/audio.ts";
@@ -25,7 +25,6 @@ async function getOrFetchAgentId(supabase: ReturnType<typeof createClient>, apiK
   const envAgentId = Deno.env.get("ELEVENLABS_AGENT_ID")?.trim();
   if (envAgentId) return envAgentId;
 
-  // Best-effort: list agents and find Sam
   try {
     const res = await fetch("https://api.elevenlabs.io/v1/convai/agents", {
       headers: { "xi-api-key": apiKey },
@@ -69,8 +68,6 @@ Deno.serve(async (req) => {
     return new Response("ElevenLabs agent not found", { status: 500 });
   }
 
-  // Get a signed conversation URL so we can connect via WebSocket without custom headers
-  // (Deno's WebSocket constructor does not support a `headers` option — passing it throws "Invalid protocol value").
   let signedUrl: string;
   try {
     const signRes = await fetch(
@@ -94,32 +91,39 @@ Deno.serve(async (req) => {
   }
 
   const { socket: telnyxSocket, response } = Deno.upgradeWebSocket(req);
-  const elSocket = new WebSocket(signedUrl);
 
+  let elSocket: WebSocket | null = null;
+  let elConnecting = false;
   let telnyxStreamId: string | null = null;
   let elReady = false;
   let firstCallerAudioLogged = false;
   let firstAgentAudioSent = false;
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
+  let bridgeClosed = false;
   const pendingTelnyxAudio: Uint8Array[] = [];
 
   console.log(`[bridge ${conversationId}] params tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
 
-  // If Telnyx never sends a `start` frame within 5s of `connected`, log it loudly.
   let connectedAt: number | null = null;
   let startSeen = false;
   const startTimer = setTimeout(() => {
     if (connectedAt && !startSeen) {
-      console.error(`[bridge ${conversationId}] NO START frame 5s after connected — Telnyx media negotiation likely failed`);
+      console.error(`[bridge ${conversationId}] NO START frame 5s after connected — websocket was accepted but Telnyx never began media`);
     }
   }, 5000);
 
   const closeBoth = (reason: string) => {
+    if (bridgeClosed) return;
+    bridgeClosed = true;
     console.log(`[bridge ${conversationId}] closing: ${reason}`);
     clearTimeout(startTimer);
-    try { telnyxSocket.close(); } catch {}
-    try { elSocket.close(); } catch {}
+    try {
+      if (telnyxSocket.readyState < 2) telnyxSocket.close();
+    } catch {}
+    try {
+      if (elSocket && elSocket.readyState < 2) elSocket.close();
+    } catch {}
     supabase
       .from("conversations")
       .update({ ended_at: new Date().toISOString() })
@@ -127,27 +131,44 @@ Deno.serve(async (req) => {
       .then(() => {});
   };
 
-  // ElevenLabs → Telnyx
-  elSocket.onopen = () => {
-    console.log(`[bridge ${conversationId}] EL open`);
-    const firstName = callerName.trim().split(/\s+/)[0] || "there";
-    elSocket.send(
-      JSON.stringify({
-        type: "conversation_initiation_client_data",
-        dynamic_variables: {
-          tenant_id: tenantId,
-          conversation_id: conversationId,
-          caller_phone: callerPhone,
-          caller_name: callerName,
-          caller_email: callerEmail,
-          first_name: firstName,
-          company_name: companyName,
-          tenant_timezone: tenantTimezone,
-        },
-        conversation_config_override: {
-          agent: {
-            prompt: {
-              prompt: `You are Sam, the voice appointment setter for ${companyName || "the company"}.
+  function sendUserAudioToEL(mulawBytes: Uint8Array) {
+    if (!elSocket || elSocket.readyState !== WebSocket.OPEN) return;
+    const pcm8k = mulawToPcm16(mulawBytes);
+    const pcm16k = upsample8to16(pcm8k);
+    elSocket.send(JSON.stringify({
+      user_audio_chunk: int16ToBase64(pcm16k),
+    }));
+  }
+
+  function initElSocket() {
+    if (bridgeClosed || elSocket || elConnecting) return;
+
+    elConnecting = true;
+    elReady = false;
+    const socket = new WebSocket(signedUrl);
+    elSocket = socket;
+
+    socket.onopen = () => {
+      elConnecting = false;
+      console.log(`[bridge ${conversationId}] EL open`);
+      const firstName = callerName.trim().split(/\s+/)[0] || "there";
+      socket.send(
+        JSON.stringify({
+          type: "conversation_initiation_client_data",
+          dynamic_variables: {
+            tenant_id: tenantId,
+            conversation_id: conversationId,
+            caller_phone: callerPhone,
+            caller_name: callerName,
+            caller_email: callerEmail,
+            first_name: firstName,
+            company_name: companyName,
+            tenant_timezone: tenantTimezone,
+          },
+          conversation_config_override: {
+            agent: {
+              prompt: {
+                prompt: `You are Sam, the voice appointment setter for ${companyName || "the company"}.
 
 Your persona, memory, conversational logic, and booking behavior are defined in backend code and must be followed as the source of truth.
 
@@ -191,116 +212,116 @@ Objections:
 - is this legit → explain the consult shows exactly how it works, then redirect to morning/afternoon
 - not sure it would work → explain that's why the consult exists, then redirect to earlier/later
 - don't want fake looking → explain seeing it makes it click, then redirect to morning/afternoon`,
+              },
+              first_message: `Hey — is this ${firstName}?`,
+              language: "en",
             },
-            first_message: `Hey — is this ${firstName}?`,
-            language: "en",
+            tts: {
+              stability: 0.72,
+              similarity_boost: 0.75,
+              speed: 0.95,
+            },
           },
-          tts: {
-            stability: 0.72,
-            similarity_boost: 0.75,
-            speed: 0.95,
-          },
-        },
-      }),
-    );
-  };
+        }),
+      );
+    };
 
-  elSocket.onmessage = async (ev) => {
-    let msg: any;
-    try { msg = JSON.parse(ev.data as string); } catch { return; }
+    socket.onmessage = async (ev) => {
+      let msg: any;
+      try {
+        msg = JSON.parse(ev.data as string);
+      } catch {
+        return;
+      }
 
-    switch (msg.type) {
-      case "conversation_initiation_metadata":
-        elReady = true;
-        console.log(`[bridge ${conversationId}] EL ready — flushing ${pendingTelnyxAudio.length} buffered frames`);
-        // Flush any buffered audio
-        for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
-        pendingTelnyxAudio.length = 0;
-        break;
+      switch (msg.type) {
+        case "conversation_initiation_metadata":
+          elReady = true;
+          console.log(`[bridge ${conversationId}] EL ready — flushing ${pendingTelnyxAudio.length} buffered frames`);
+          for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
+          pendingTelnyxAudio.length = 0;
+          break;
 
-      case "audio": {
-        const b64 = msg.audio_event?.audio_base_64;
-        if (!b64) break;
-        if (!telnyxStreamId) {
-          console.log(`[bridge ${conversationId}] dropping EL audio — no Telnyx stream_id yet`);
+        case "audio": {
+          const b64 = msg.audio_event?.audio_base_64;
+          if (!b64) break;
+          if (!telnyxStreamId) {
+            console.log(`[bridge ${conversationId}] dropping EL audio — no Telnyx stream_id yet`);
+            break;
+          }
+          const pcm16k = base64ToInt16(b64);
+          const pcm8k = downsample16to8(pcm16k);
+          const mulaw = pcm16ToMulaw(pcm8k);
+          const payload = uint8ToBase64(mulaw);
+          telnyxSocket.send(JSON.stringify({
+            event: "media",
+            media: { payload },
+          }));
+          if (!firstAgentAudioSent) {
+            firstAgentAudioSent = true;
+            console.log(`[bridge ${conversationId}] FIRST agent audio sent to Telnyx`);
+          }
           break;
         }
-        // EL sends PCM 16k base64. Downsample → μ-law 8k → base64 → Telnyx media frame.
-        const pcm16k = base64ToInt16(b64);
-        const pcm8k = downsample16to8(pcm16k);
-        const mulaw = pcm16ToMulaw(pcm8k);
-        const payload = uint8ToBase64(mulaw);
-        // Telnyx outbound media frame: spec is { event: "media", media: { payload } }
-        // Do NOT include stream_id — Telnyx rejects/ignores frames with extra fields.
-        telnyxSocket.send(JSON.stringify({
-          event: "media",
-          media: { payload },
-        }));
-        if (!firstAgentAudioSent) {
-          firstAgentAudioSent = true;
-          console.log(`[bridge ${conversationId}] FIRST agent audio sent to Telnyx`);
+
+        case "user_transcript": {
+          const text = msg.user_transcription_event?.user_transcript;
+          if (text) {
+            await supabase.from("transcript_entries").insert({
+              conversation_id: conversationId,
+              role: "user",
+              text,
+            });
+          }
+          break;
         }
-        break;
+
+        case "agent_response": {
+          const text = msg.agent_response_event?.agent_response;
+          if (text) {
+            await supabase.from("transcript_entries").insert({
+              conversation_id: conversationId,
+              role: "agent",
+              text,
+            });
+          }
+          break;
+        }
+
+        case "ping":
+          socket.send(JSON.stringify({
+            type: "pong",
+            event_id: msg.ping_event?.event_id,
+          }));
+          break;
+
+        case "interruption":
+          if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
+            telnyxSocket.send(JSON.stringify({ event: "clear" }));
+          }
+          break;
       }
+    };
 
-      case "user_transcript": {
-        const text = msg.user_transcription_event?.user_transcript;
-        if (text) {
-          await supabase.from("transcript_entries").insert({
-            conversation_id: conversationId,
-            role: "user",
-            text,
-          });
-        }
-        break;
-      }
-
-      case "agent_response": {
-        const text = msg.agent_response_event?.agent_response;
-        if (text) {
-          await supabase.from("transcript_entries").insert({
-            conversation_id: conversationId,
-            role: "agent",
-            text,
-          });
-        }
-        break;
-      }
-
-      case "ping":
-        elSocket.send(JSON.stringify({
-          type: "pong",
-          event_id: msg.ping_event?.event_id,
-        }));
-        break;
-
-      case "interruption":
-        if (telnyxStreamId) {
-          // Telnyx clear frame — no stream_id field per spec.
-          telnyxSocket.send(JSON.stringify({ event: "clear" }));
-        }
-        break;
-    }
-  };
-
-  elSocket.onerror = (e) => console.error(`[bridge ${conversationId}] EL error`, e);
-  elSocket.onclose = () => closeBoth("EL closed");
-
-  function sendUserAudioToEL(mulawBytes: Uint8Array) {
-    // Telnyx μ-law 8k → PCM 16 → upsample to 16k → base64 → user_audio_chunk
-    const pcm8k = mulawToPcm16(mulawBytes);
-    const pcm16k = upsample8to16(pcm8k);
-    elSocket.send(JSON.stringify({
-      user_audio_chunk: int16ToBase64(pcm16k),
-    }));
+    socket.onerror = (e) => console.error(`[bridge ${conversationId}] EL error`, e);
+    socket.onclose = (ev) => {
+      const wasReady = elReady;
+      elConnecting = false;
+      elReady = false;
+      if (elSocket === socket) elSocket = null;
+      console.error(
+        `[bridge ${conversationId}] EL closed code=${ev.code} reason="${ev.reason}" wasClean=${ev.wasClean} ready=${wasReady} startSeen=${startSeen} mediaFrames=${telnyxMediaCount}`,
+      );
+    };
   }
 
-  // Telnyx → ElevenLabs
   telnyxSocket.onopen = () => console.log(`[bridge ${conversationId}] Telnyx WS open`);
 
   telnyxSocket.onmessage = (ev) => {
     let frame: any;
-    try { frame = JSON.parse(ev.data as string); } catch {
+    try {
+      frame = JSON.parse(ev.data as string);
+    } catch {
       console.log(`[bridge ${conversationId}] Telnyx non-JSON frame`);
       return;
     }
@@ -321,6 +342,7 @@ Objections:
         clearTimeout(startTimer);
         telnyxStreamId = frame.stream_id || frame.start?.stream_id;
         console.log(`[bridge ${conversationId}] Telnyx START stream_id=${telnyxStreamId} payload=${JSON.stringify(frame).slice(0, 400)}`);
+        initElSocket();
         break;
 
       case "media": {
@@ -334,8 +356,9 @@ Objections:
         if (telnyxMediaCount % 250 === 0) {
           console.log(`[bridge ${conversationId}] Telnyx media frames: ${telnyxMediaCount}`);
         }
+        if (!elSocket && !elConnecting) initElSocket();
         const mulaw = base64ToUint8(payload);
-        if (elReady && elSocket.readyState === WebSocket.OPEN) {
+        if (elReady && elSocket?.readyState === WebSocket.OPEN) {
           sendUserAudioToEL(mulaw);
         } else {
           pendingTelnyxAudio.push(mulaw);
@@ -359,7 +382,9 @@ Objections:
 
   telnyxSocket.onerror = (e) => console.error(`[bridge ${conversationId}] Telnyx error`, e);
   telnyxSocket.onclose = (ev) => {
-    console.log(`[bridge ${conversationId}] Telnyx WS closed code=${ev.code} reason="${ev.reason}" wasClean=${ev.wasClean} totalFrames=${telnyxFrameCount} mediaFrames=${telnyxMediaCount} startSeen=${startSeen}`);
+    console.log(
+      `[bridge ${conversationId}] Telnyx WS closed code=${ev.code} reason="${ev.reason}" wasClean=${ev.wasClean} totalFrames=${telnyxFrameCount} mediaFrames=${telnyxMediaCount} startSeen=${startSeen}`,
+    );
     closeBoth("Telnyx closed");
   };
 
