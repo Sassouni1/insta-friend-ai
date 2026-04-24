@@ -1,55 +1,57 @@
 
 
-## Telnyx audit results — what changed and what's left
+## Why your 15s of talking never got logged
 
-Manus's report changes the diagnosis. Two big new facts:
+The bridge logs prove Telnyx never sent us audio:
+```
+Telnyx WS open
+Telnyx connected frame
+(no start frame, no media frames, ever)
+Telnyx closed → streaming.failed → call.hangup
+```
 
-1. **The number wasn't even attached to Command IQ.** That alone explains "could not be completed as dialed" and the silent inbound calls. Now fixed.
-2. **Codecs are fine, outbound profile is fine, webhook URL is correct.** So the portal side is now clean except for one thing to verify.
+A `connected` frame just means the WebSocket handshake worked. The `start` frame is what Telnyx sends right before it begins streaming caller audio. We never got it. So when you spoke, Telnyx had nowhere to send those packets — the media negotiation had already failed on its side.
 
-## Action items
+## Root cause
 
-### A. Verify the Telnyx public key matches (you, 30 seconds)
-The `TELNYX_PUBLIC_KEY` secret in our backend must equal exactly:
-`P7aSLLNE0EQHoGUmgQkO5ZbF7t2rrn9oRNzEHDyMejM=`
+Our dial/answer payloads include:
+- `stream_bidirectional_mode: "rtp"`
+- `stream_bidirectional_codec: "PCMU"`
 
-If it doesn't match, every Telnyx webhook is silently rejected as "invalid signature" and nothing in `telnyx-inbound` runs past the verification gate. I'll check this and update the secret if needed once we go to default mode.
+That tells Telnyx: "set up a separate RTP-over-UDP path for agent audio." We don't have one. Telnyx fails the negotiation → `streaming.failed` → tears down the WebSocket before any audio flows.
 
-### B. Code fixes (I implement)
-The Manus note about media streaming is important: streaming is started either via the `answer` Call Control command (inbound — we already do this) or via `stream_url` on dial (outbound — we already do this). So no new portal config is needed, but our bridge code still has real bugs:
+Our bridge is built for the **WebSocket-only** bidirectional protocol (JSON `media` frames both ways). We just need to stop asking for RTP mode.
 
-**Files to update:**
+## Fix
 
-1. `supabase/functions/_shared/telnyx.ts`
-   - Add `stream_bidirectional_mode` and `stream_bidirectional_codec` parameters to `telnyxDial`.
+**1. `supabase/functions/telnyx-outbound-call/index.ts`** — remove `stream_bidirectional_mode` and `stream_bidirectional_codec` from the dial.
 
-2. `supabase/functions/lead-opt-in-webhook/index.ts`
-   - Pass `stream_bidirectional_mode: "rtp"` and `stream_bidirectional_codec: "PCMU"` on dial.
+**2. `supabase/functions/lead-opt-in-webhook/index.ts`** — same removal in `placeDial`.
 
-3. `supabase/functions/telnyx-outbound-call/index.ts`
-   - Same bidirectional params on dial.
+**3. `supabase/functions/telnyx-inbound/index.ts`** — already clean on the answer (no bidirectional_mode). Leave as-is.
 
-4. `supabase/functions/telnyx-inbound/index.ts`
-   - Already sets `stream_bidirectional_mode: "rtp"` and `stream_codec: "PCMU"` on answer — leave as-is.
+**4. `supabase/functions/_shared/telnyx.ts`** — remove the two RTP fields from the `telnyxDial` type so they can't be reintroduced.
 
-5. `supabase/functions/telnyx-bridge/index.ts`
-   - **Remove `stream_id` from outbound `media` and `clear` frames** sent to Telnyx (Telnyx spec doesn't include it on agent→Telnyx frames; very likely cause of `streaming.failed`).
-   - Don't push agent audio to Telnyx until the `start` frame arrives.
-   - Add deep diagnostic logging: every Telnyx event (`connected`, `start`, `media` count, `stop`, `error` payload), every ElevenLabs lifecycle event, and explicit "first caller audio in" / "first agent audio out" markers.
+**5. `supabase/functions/telnyx-bridge/index.ts`** — add one diagnostic: log every raw Telnyx frame `event` type for the first 5 frames, and log Telnyx close code/reason explicitly. Confirms `start` arrives on the next test.
 
-### C. Verify and re-test
-1. Confirm/update `TELNYX_PUBLIC_KEY` secret.
-2. Deploy the updated edge functions.
-3. Trigger one outbound call to `+17276374672`.
-4. Read logs and confirm this sequence:
-   - `call.initiated` → `call.answered` → `streaming.started` (no `streaming.failed`)
-   - bridge logs: `Telnyx start frame received` → `first caller audio` → `first agent audio sent`
-   - transcript_entries rows appear
+**6. Deploy** all four functions, then place one test call. Expected new log sequence:
+```
+Telnyx WS open
+connected
+start ← this is the new line we need to see
+FIRST caller audio received
+EL ready
+FIRST agent audio sent
+```
 
-## Why this should finally work
-- The "could not be completed as dialed" error is explained by the unassigned number — now fixed.
-- The silent calls + `streaming.failed` pattern is explained by malformed outbound frames + missing bidirectional flag — fixed by code changes above.
-- New logs will pinpoint anything still broken in one specific layer instead of guessing.
+If `start` appears and audio flows, you'll hear Sam. If `start` still doesn't appear after removing the RTP params, the new close-code log will tell us exactly what Telnyx is rejecting.
 
-Approve and I'll implement immediately.
+## What stays out of scope
+
+- Number assignment (already fixed in portal)
+- ElevenLabs auth (logs show `EL open` and `EL ready` — working)
+- Webhook routing (events arrive correctly)
+- Bridge JSON frame format (already correct for WebSocket mode)
+
+Approve and I'll implement and deploy in default mode.
 
