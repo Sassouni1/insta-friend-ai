@@ -189,37 +189,30 @@ export function VoiceAgent() {
       // non-critical
     }
 
+    let preferredInputId: string | undefined;
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const audioInputs = devices.filter((device) => device.kind === "audioinput");
-      const preferredInputId = audioInputs[0]?.deviceId;
-
-      if (!preferredInputId) {
-        throw new Error("No microphone detected. Connect a microphone and allow browser mic access, then try again.");
+      // Request mic first — this triggers the browser permission prompt.
+      // enumerateDevices() returns empty/unlabeled results until permission is granted.
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("This browser does not support microphone access (mediaDevices unavailable). Try Chrome or Edge over HTTPS.");
       }
 
-      addDiagEvent("media_devices", `audio inputs: ${audioInputs.length}`);
+      const preflightStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
 
-      let preflightStream: MediaStream | null = null;
+      // Now that permission is granted, enumerate to pick a stable deviceId for the SDK.
       try {
-        preflightStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            deviceId: { exact: preferredInputId },
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
-      } catch (deviceErr) {
-        console.warn("Specific mic preflight failed, retrying with default audio device", deviceErr);
-        addDiagEvent("media_retry", "specific input failed, retrying default input");
-        preflightStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devices.filter((d) => d.kind === "audioinput");
+        preferredInputId = audioInputs[0]?.deviceId || undefined;
+        addDiagEvent("media_devices", `audio inputs: ${audioInputs.length}`);
+      } catch (enumErr) {
+        console.warn("enumerateDevices failed (non-critical):", enumErr);
       }
 
       preflightStream.getTracks().forEach((track) => track.stop());
