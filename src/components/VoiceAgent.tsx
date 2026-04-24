@@ -130,7 +130,7 @@ export function VoiceAgent() {
         const latencyMs = computeLatency();
         pendingAgentLatencyRef.current = latencyMs;
         setTranscript((prev) => [...prev, { role: "agent", text: directText, timestamp: new Date(), latencyMs: latencyMs ?? undefined }]);
-        persistEntry("agent", text, latencyMs ?? undefined);
+        persistEntry("agent", directText, latencyMs ?? undefined);
       } else if (message.type === "agent_response_correction") {
         const text = message.agent_response_correction_event?.corrected_agent_response;
         if (text) {
