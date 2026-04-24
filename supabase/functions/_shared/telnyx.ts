@@ -28,6 +28,7 @@ export async function telnyxDial(params: {
   stream_url?: string;
   stream_track?: "inbound_track" | "outbound_track" | "both_tracks";
   client_state?: string;
+  timeout_secs?: number;
 }): Promise<Response> {
   const apiKey = Deno.env.get("TELNYX_API_KEY");
   if (!apiKey) throw new Error("TELNYX_API_KEY not configured");
