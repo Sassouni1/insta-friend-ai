@@ -322,11 +322,10 @@ Deno.serve(async (req) => {
           console.log(`[bridge ${conversationId}] Telnyx media frames: ${telnyxMediaCount}`);
         }
         if (!elSocket && !elConnecting) initElSocket();
-        const mulaw = base64ToUint8(payload);
         if (elReady && elSocket?.readyState === WebSocket.OPEN) {
-          sendUserAudioToEL(mulaw);
+          sendUserAudioToEL(payload);
         } else {
-          pendingTelnyxAudio.push(mulaw);
+          pendingTelnyxAudio.push(payload);
         }
         break;
       }
