@@ -75,6 +75,9 @@ serve(async (req) => {
     connection_id,
     stream_url: streamUrl,
     stream_track: "both_tracks",
+    stream_bidirectional_mode: "rtp",
+    stream_bidirectional_codec: "PCMU",
+    stream_codec: "PCMU",
   });
 
   if (!dialRes.ok) {

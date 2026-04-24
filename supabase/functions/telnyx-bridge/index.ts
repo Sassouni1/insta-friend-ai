@@ -98,6 +98,9 @@ Deno.serve(async (req) => {
 
   let telnyxStreamId: string | null = null;
   let elReady = false;
+  let firstCallerAudioLogged = false;
+  let firstAgentAudioSent = false;
+  let telnyxMediaCount = 0;
   const pendingTelnyxAudio: Uint8Array[] = [];
 
   const closeBoth = (reason: string) => {
@@ -203,17 +206,26 @@ Objections:
 
       case "audio": {
         const b64 = msg.audio_event?.audio_base_64;
-        if (!b64 || !telnyxStreamId) break;
+        if (!b64) break;
+        if (!telnyxStreamId) {
+          console.log(`[bridge ${conversationId}] dropping EL audio — no Telnyx stream_id yet`);
+          break;
+        }
         // EL sends PCM 16k base64. Downsample → μ-law 8k → base64 → Telnyx media frame.
         const pcm16k = base64ToInt16(b64);
         const pcm8k = downsample16to8(pcm16k);
         const mulaw = pcm16ToMulaw(pcm8k);
         const payload = uint8ToBase64(mulaw);
+        // Telnyx outbound media frame: spec is { event: "media", media: { payload } }
+        // Do NOT include stream_id — Telnyx rejects/ignores frames with extra fields.
         telnyxSocket.send(JSON.stringify({
           event: "media",
-          stream_id: telnyxStreamId,
           media: { payload },
         }));
+        if (!firstAgentAudioSent) {
+          firstAgentAudioSent = true;
+          console.log(`[bridge ${conversationId}] FIRST agent audio sent to Telnyx`);
+        }
         break;
       }
 
@@ -250,7 +262,8 @@ Objections:
 
       case "interruption":
         if (telnyxStreamId) {
-          telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
+          // Telnyx clear frame — no stream_id field per spec.
+          telnyxSocket.send(JSON.stringify({ event: "clear" }));
         }
         break;
     }
