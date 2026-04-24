@@ -189,10 +189,10 @@ export function VoiceAgent() {
       // non-critical
     }
 
-    let preferredInputId: string | undefined;
     try {
-      // Request mic first — this triggers the browser permission prompt.
-      // enumerateDevices() returns empty/unlabeled results until permission is granted.
+      // Request mic access first so the browser prompts the user and the default input is ready.
+      // Let the ElevenLabs SDK use the active default device instead of forcing the first enumerated mic,
+      // which can be stale or invalid in remixed projects / browser sessions.
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error("This browser does not support microphone access (mediaDevices unavailable). Try Chrome or Edge over HTTPS.");
       }
@@ -205,11 +205,9 @@ export function VoiceAgent() {
         },
       });
 
-      // Now that permission is granted, enumerate to pick a stable deviceId for the SDK.
       try {
         const devices = await navigator.mediaDevices.enumerateDevices();
         const audioInputs = devices.filter((d) => d.kind === "audioinput");
-        preferredInputId = audioInputs[0]?.deviceId || undefined;
         addDiagEvent("media_devices", `audio inputs: ${audioInputs.length}`);
       } catch (enumErr) {
         console.warn("enumerateDevices failed (non-critical):", enumErr);
