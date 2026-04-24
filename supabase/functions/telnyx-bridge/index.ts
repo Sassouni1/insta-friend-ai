@@ -118,8 +118,6 @@ Deno.serve(async (req) => {
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
   let bridgeClosed = false;
-  // Half-duplex echo gate: when EL is speaking, drop inbound caller frames
-  // (Telnyx bidirectional RTP loops our TTS back into the inbound track).
   let agentSpeakingUntil = 0;
   let lastForwardedSpeechAt = 0;
   const AGENT_SPEAK_TAIL_MS = 600;
@@ -127,7 +125,222 @@ Deno.serve(async (req) => {
   const RECENT_SPEECH_WINDOW_MS = 1200;
   const INBOUND_SPEECH_THRESHOLD = 180;
   const pendingTelnyxAudio: string[] = [];
-...
+
+  console.log(`[bridge ${conversationId}] params tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
+
+  let connectedAt: number | null = null;
+  let startSeen = false;
+  const startTimer = setTimeout(() => {
+    if (connectedAt && !startSeen) {
+      console.error(`[bridge ${conversationId}] NO START frame 5s after connected — websocket was accepted but Telnyx never began media`);
+    }
+  }, 5000);
+
+  const closeBoth = (reason: string) => {
+    if (bridgeClosed) return;
+    bridgeClosed = true;
+    console.log(`[bridge ${conversationId}] closing: ${reason}`);
+    clearTimeout(startTimer);
+    try {
+      if (telnyxSocket.readyState < 2) telnyxSocket.close();
+    } catch {}
+    try {
+      if (elSocket && elSocket.readyState < 2) elSocket.close();
+    } catch {}
+    supabase
+      .from("conversations")
+      .update({ ended_at: new Date().toISOString() })
+      .eq("id", conversationId)
+      .then(() => {});
+  };
+
+  function transformTelnyxAudioForEL(mulawB64: string): string {
+    const targetFormat = elUserInputAudioFormat || "pcm_16000";
+    if (isMulaw8000(targetFormat)) return mulawB64;
+
+    const mulaw = base64ToUint8(mulawB64);
+    const pcm8 = mulawToPcm16(mulaw);
+
+    if (isPcm8000(targetFormat)) return int16ToBase64(pcm8);
+    if (isPcm16000(targetFormat)) return int16ToBase64(upsample8to16(pcm8));
+
+    console.warn(`[bridge ${conversationId}] unknown EL input format ${targetFormat}, defaulting Telnyx→EL to pcm_16000`);
+    return int16ToBase64(upsample8to16(pcm8));
+  }
+
+  function transformELAudioForTelnyx(audioB64: string): string {
+    const sourceFormat = elAgentOutputAudioFormat || "pcm_16000";
+    if (isMulaw8000(sourceFormat)) return audioB64;
+
+    if (isPcm8000(sourceFormat)) {
+      const pcm8 = base64ToInt16(audioB64);
+      return uint8ToBase64(pcm16ToMulaw(pcm8));
+    }
+
+    if (isPcm16000(sourceFormat)) {
+      const pcm16 = base64ToInt16(audioB64);
+      const pcm8 = downsample16to8(pcm16);
+      return uint8ToBase64(pcm16ToMulaw(pcm8));
+    }
+
+    console.warn(`[bridge ${conversationId}] unknown EL output format ${sourceFormat}, defaulting EL→Telnyx to pcm_16000 -> PCMU`);
+    const pcm16 = base64ToInt16(audioB64);
+    const pcm8 = downsample16to8(pcm16);
+    return uint8ToBase64(pcm16ToMulaw(pcm8));
+  }
+
+  function sendUserAudioToEL(mulawB64: string) {
+    if (!elSocket || elSocket.readyState !== WebSocket.OPEN) return;
+
+    const transformedAudio = transformTelnyxAudioForEL(mulawB64);
+    elSocket.send(JSON.stringify({ user_audio_chunk: transformedAudio }));
+
+    if (firstUserChunkSentAt === null) {
+      firstUserChunkSentAt = Date.now();
+      console.log(
+        `[bridge ${conversationId}] FIRST user_audio_chunk sent to EL (Telnyx PCMU 8k -> ${elUserInputAudioFormat || "pcm_16000"})`,
+      );
+      vadWarnTimer = setTimeout(() => {
+        if (!firstVadLogged) {
+          console.error(`[bridge ${conversationId}] WARN — 4s of audio sent, no vad_score from EL. Format mismatch likely.`);
+        }
+      }, 4000) as unknown as number;
+    }
+  }
+
+  function initElSocket() {
+    if (bridgeClosed || elSocket || elConnecting) return;
+
+    elConnecting = true;
+    elReady = false;
+    const socket = new WebSocket(signedUrl);
+    elSocket = socket;
+
+    socket.onopen = () => {
+      elConnecting = false;
+      console.log(`[bridge ${conversationId}] EL open — requesting pcm_16000 both directions`);
+      const firstName = callerName.trim().split(/\s+/)[0] || "there";
+      socket.send(
+        JSON.stringify({
+          type: "conversation_initiation_client_data",
+          conversation_config_override: {
+            asr: { user_input_audio_format: "pcm_16000" },
+            tts: { agent_output_audio_format: "pcm_16000" },
+            conversation: {
+              client_events: [
+                "audio",
+                "interruption",
+                "agent_response",
+                "user_transcript",
+                "agent_response_correction",
+                "agent_tool_response",
+                "vad_score",
+                "ping",
+              ],
+            },
+          },
+          dynamic_variables: {
+            tenant_id: tenantId,
+            conversation_id: conversationId,
+            caller_phone: callerPhone,
+            caller_name: callerName,
+            caller_email: callerEmail,
+            first_name: firstName,
+            company_name: companyName,
+            tenant_timezone: tenantTimezone,
+          },
+        }),
+      );
+    };
+
+    socket.onmessage = async (ev) => {
+      let msg: any;
+      try {
+        msg = JSON.parse(ev.data as string);
+      } catch {
+        return;
+      }
+
+      switch (msg.type) {
+        case "conversation_initiation_metadata": {
+          const meta = msg.conversation_initiation_metadata_event || {};
+          elUserInputAudioFormat = meta.user_input_audio_format || null;
+          elAgentOutputAudioFormat = meta.agent_output_audio_format || null;
+          elReady = true;
+          console.log(`[bridge ${conversationId}] EL META: ${JSON.stringify(msg).slice(0, 800)}`);
+          console.log(
+            `[bridge ${conversationId}] EL ready — negotiated in=${elUserInputAudioFormat || "unknown"} out=${elAgentOutputAudioFormat || "unknown"}; flushing ${pendingTelnyxAudio.length} buffered frames`,
+          );
+          for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
+          pendingTelnyxAudio.length = 0;
+          break;
+        }
+
+        case "audio": {
+          const b64 = msg.audio_event?.audio_base_64;
+          if (!b64) break;
+          if (!telnyxStreamId) {
+            console.log(`[bridge ${conversationId}] dropping EL audio — no Telnyx stream_id yet`);
+            break;
+          }
+          if (!firstAgentAudioSent) {
+            try {
+              const raw = atob(b64);
+              const hex = Array.from(raw.slice(0, 32)).map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join(" ");
+              console.log(`[bridge ${conversationId}] EL audio first 32 bytes hex: ${hex} (b64 len=${b64.length}, raw len=${raw.length})`);
+            } catch {}
+          }
+
+          const telnyxPayload = transformELAudioForTelnyx(b64);
+          telnyxSocket.send(JSON.stringify({
+            event: "media",
+            stream_id: telnyxStreamId,
+            media: { payload: telnyxPayload },
+          }));
+          try {
+            const playoutMs = Math.ceil((atob(telnyxPayload).length / 8000) * 1000);
+            agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + playoutMs + AGENT_SPEAK_TAIL_MS);
+          } catch {}
+          if (!firstAgentAudioSent) {
+            firstAgentAudioSent = true;
+            console.log(
+              `[bridge ${conversationId}] FIRST agent audio sent to Telnyx (${elAgentOutputAudioFormat || "pcm_16000"} -> Telnyx PCMU 8k)`,
+            );
+          }
+          break;
+        }
+
+        case "user_transcript": {
+          const text = msg.user_transcription_event?.user_transcript;
+          if (text) {
+            await supabase.from("transcript_entries").insert({
+              conversation_id: conversationId,
+              role: "user",
+              text,
+            });
+          }
+          break;
+        }
+
+        case "agent_response": {
+          const text = msg.agent_response_event?.agent_response;
+          if (text) {
+            await supabase.from("transcript_entries").insert({
+              conversation_id: conversationId,
+              role: "agent",
+              text,
+            });
+          }
+          break;
+        }
+
+        case "ping":
+          socket.send(JSON.stringify({
+            type: "pong",
+            event_id: msg.ping_event?.event_id,
+          }));
+          break;
+
         case "vad_score": {
           const score = msg.vad_score_event?.vad_score ?? msg.vad_score;
           if (!firstVadLogged && typeof score === "number") {
@@ -164,7 +377,49 @@ Deno.serve(async (req) => {
         }
       }
     };
-...
+
+    socket.onerror = (e) => console.error(`[bridge ${conversationId}] EL error`, e);
+    socket.onclose = (ev) => {
+      const wasReady = elReady;
+      elConnecting = false;
+      elReady = false;
+      if (elSocket === socket) elSocket = null;
+      console.error(
+        `[bridge ${conversationId}] EL closed code=${ev.code} reason="${ev.reason}" wasClean=${ev.wasClean} ready=${wasReady} startSeen=${startSeen} mediaFrames=${telnyxMediaCount}`,
+      );
+    };
+  }
+
+  telnyxSocket.onopen = () => console.log(`[bridge ${conversationId}] Telnyx WS open`);
+
+  telnyxSocket.onmessage = (ev) => {
+    let frame: any;
+    try {
+      frame = JSON.parse(ev.data as string);
+    } catch {
+      console.log(`[bridge ${conversationId}] Telnyx non-JSON frame`);
+      return;
+    }
+
+    telnyxFrameCount++;
+    if (telnyxFrameCount <= 5) {
+      console.log(`[bridge ${conversationId}] Telnyx frame #${telnyxFrameCount} event=${frame.event}`);
+    }
+
+    switch (frame.event) {
+      case "connected":
+        connectedAt = Date.now();
+        console.log(`[bridge ${conversationId}] Telnyx connected frame: ${JSON.stringify(frame).slice(0, 300)}`);
+        break;
+
+      case "start":
+        startSeen = true;
+        clearTimeout(startTimer);
+        telnyxStreamId = frame.stream_id || frame.start?.stream_id;
+        console.log(`[bridge ${conversationId}] Telnyx START stream_id=${telnyxStreamId} payload=${JSON.stringify(frame).slice(0, 400)}`);
+        initElSocket();
+        break;
+
       case "media": {
         const payload = frame.media?.payload;
         if (!payload) break;
@@ -196,8 +451,7 @@ Deno.serve(async (req) => {
           console.log(`[bridge ${conversationId}] Telnyx media frames: ${telnyxMediaCount}`);
         }
         if (!elSocket && !elConnecting) initElSocket();
-        // Echo gate: while agent is speaking (and short tail after), drop inbound
-        // frames so EL doesn't transcribe its own TTS bleeding through Telnyx RTP.
+
         const muted = Date.now() < agentSpeakingUntil;
         if (!muted && typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD) {
           lastForwardedSpeechAt = Date.now();
