@@ -37,6 +37,11 @@ serve(async (req) => {
   const payload = event?.data?.payload || {};
   console.log(`[telnyx-inbound] event: ${eventType}`);
 
+  // Log full payload of streaming.failed so we can see exactly what Telnyx is rejecting.
+  if (eventType === "streaming.failed") {
+    console.error(`[telnyx-inbound] streaming.failed payload: ${JSON.stringify(payload)}`);
+  }
+
   // Only act on call.initiated for inbound calls
   if (eventType !== "call.initiated" || payload.direction !== "incoming") {
     return jsonResponse({ ok: true, ignored: eventType });
@@ -82,11 +87,10 @@ serve(async (req) => {
 
   const streamUrl = `${BRIDGE_WS_URL}?conv=${convRow.id}&tenant=${phoneRow.tenant_id}&caller=${encodeURIComponent(fromNumber)}`;
 
-  // Answer the call with media streaming
+  // Answer the call with media streaming (WebSocket JSON protocol — no RTP bidirectional mode)
   const answerRes = await telnyxCallControl(callControlId, "answer", {
     stream_url: streamUrl,
     stream_track: "both_tracks",
-    stream_bidirectional_mode: "rtp",
     stream_codec: "PCMU",
   });
 

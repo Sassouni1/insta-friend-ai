@@ -27,8 +27,9 @@ export async function telnyxDial(params: {
   connection_id: string;
   stream_url?: string;
   stream_track?: "inbound_track" | "outbound_track" | "both_tracks";
-  stream_bidirectional_mode?: "rtp" | "mp3";
-  stream_bidirectional_codec?: "PCMU" | "PCMA" | "G722";
+  // NOTE: stream_bidirectional_mode/codec intentionally omitted.
+  // Our bridge speaks the WebSocket JSON media protocol, not RTP-over-UDP.
+  // Setting bidirectional_mode causes Telnyx to fail stream negotiation.
   stream_codec?: "PCMU" | "PCMA" | "G722" | "OPUS";
   client_state?: string;
   timeout_secs?: number;
