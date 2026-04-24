@@ -242,7 +242,22 @@ export function VoiceAgent() {
 
       await conversation.startSession({
         conversationToken: data.token,
-      });
+        dynamicVariables: {
+          first_name: "",
+          caller_name: "",
+          caller_phone: "",
+          caller_email: "",
+          company_name: "Hair Systems",
+          tenant_timezone: "America/Los_Angeles",
+          tenant_id: "",
+          conversation_id: conversationIdRef.current ?? "",
+        },
+        overrides: {
+          agent: {
+            firstMessage: "Hey — thanks for reaching out. Who do I have the pleasure of speaking with?",
+          },
+        },
+      } as any);
 
       try {
         await conversation.setVolume({ volume: 1 });

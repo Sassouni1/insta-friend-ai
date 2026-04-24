@@ -32,7 +32,7 @@ async function getOrFetchAgentId(supabase: ReturnType<typeof createClient>, apiK
     });
     if (!res.ok) return null;
     const data = await res.json();
-    const agent = (data.agents || []).find((a: any) => a.name === "Sam - Barber Launch");
+    const agent = (data.agents || []).find((a: any) => a.name === "Sam - Hair Systems");
     return agent?.agent_id || null;
   } catch {
     return null;
