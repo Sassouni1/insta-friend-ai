@@ -132,77 +132,51 @@ async function fireCall(scheduledId: string) {
   }
 
   try {
-    const [{ data: phoneRow }, { data: tenantRow }] = await Promise.all([
-      supabase
-        .from("phone_numbers")
-        .select("e164_number, telnyx_connection_id")
-        .eq("tenant_id", claimed.tenant_id)
-        .eq("active", true)
-        .limit(1)
-        .maybeSingle(),
-      supabase
-        .from("tenants")
-        .select("name, timezone")
-        .eq("id", claimed.tenant_id)
-        .maybeSingle(),
-    ]);
-
-    if (!phoneRow?.e164_number || !phoneRow?.telnyx_connection_id) {
-      throw new Error("no active phone number for tenant");
-    }
-
-    const { data: convRow, error: convErr } = await supabase
-      .from("conversations")
-      .insert({
-        tenant_id: claimed.tenant_id,
-        caller_phone: claimed.lead_phone,
-        direction: "outbound",
-      })
-      .select("id")
-      .single();
-
-    if (convErr || !convRow) throw new Error(`conversation insert failed: ${convErr?.message}`);
-
-    const params = new URLSearchParams({
-      conv: convRow.id,
-      tenant: claimed.tenant_id,
-      caller: claimed.lead_phone,
+    const first = await placeDial({
+      supabase,
+      tenantId: claimed.tenant_id,
+      leadPhone: claimed.lead_phone,
+      leadName: claimed.lead_name,
+      leadEmail: claimed.lead_email,
     });
-    if (claimed.lead_name) params.set("name", claimed.lead_name);
-    if (claimed.lead_email) params.set("email", claimed.lead_email);
-    if (tenantRow?.name) params.set("company", tenantRow.name);
-    if (tenantRow?.timezone) params.set("tz", tenantRow.timezone);
-
-    const streamUrl = `${BRIDGE_WS_URL}?${params.toString()}`;
-
-    const dialRes = await telnyxDial({
-      to: claimed.lead_phone,
-      from: phoneRow.e164_number,
-      connection_id: phoneRow.telnyx_connection_id,
-      stream_url: streamUrl,
-      stream_track: "both_tracks",
-    });
-
-    if (!dialRes.ok) {
-      const txt = await dialRes.text();
-      throw new Error(`telnyx dial ${dialRes.status}: ${txt.slice(0, 200)}`);
-    }
-
-    const dialData = await dialRes.json();
-    const callControlId = dialData?.data?.call_control_id;
-    if (callControlId) {
-      await supabase
-        .from("conversations")
-        .update({ telnyx_call_control_id: callControlId })
-        .eq("id", convRow.id);
-    }
 
     await supabase
       .from("scheduled_calls")
-      .update({ status: "dialed", conversation_id: convRow.id, last_error: null })
+      .update({ status: "dialed", conversation_id: first.conversationId, last_error: null })
       .eq("id", scheduledId);
 
-    console.log(`[opt-in] dialed ${claimed.lead_phone} for scheduled ${scheduledId}`);
+    console.log(`[opt-in] dialed ${claimed.lead_phone} for scheduled ${scheduledId} (attempt 1)`);
+
+    // Wait for ring window, then check if they answered. If not, dial once more.
+    await new Promise((r) => setTimeout(r, RETRY_WAIT_MS));
+
+    const answered = await wasAnswered(supabase, first.conversationId);
+    if (answered) {
+      console.log(`[opt-in] ${claimed.lead_phone} answered on attempt 1`);
+      return;
+    }
+
+    console.log(`[opt-in] ${claimed.lead_phone} no-answer on attempt 1, retrying...`);
+
+    const second = await placeDial({
+      supabase,
+      tenantId: claimed.tenant_id,
+      leadPhone: claimed.lead_phone,
+      leadName: claimed.lead_name,
+      leadEmail: claimed.lead_email,
+    });
+
+    await supabase
+      .from("scheduled_calls")
+      .update({
+        status: "dialed",
+        conversation_id: second.conversationId,
+        attempts: 2,
+        last_error: null,
+      })
+      .eq("id", scheduledId);
+
+    console.log(`[opt-in] dialed ${claimed.lead_phone} for scheduled ${scheduledId} (attempt 2)`);
   } catch (err: any) {
     const msg = err?.message || String(err);
     console.error(`[opt-in] fire failed for ${scheduledId}:`, msg);
