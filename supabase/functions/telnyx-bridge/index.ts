@@ -141,6 +141,15 @@ Deno.serve(async (req) => {
     elSocket.send(JSON.stringify({
       user_audio_chunk: int16ToBase64(pcm16k),
     }));
+    if (firstUserChunkSentAt === null) {
+      firstUserChunkSentAt = Date.now();
+      console.log(`[bridge ${conversationId}] FIRST user_audio_chunk sent to EL (pcm_16000)`);
+      vadWarnTimer = setTimeout(() => {
+        if (!firstVadLogged) {
+          console.error(`[bridge ${conversationId}] WARN — 4s of audio sent, no vad_score from EL. Format mismatch likely.`);
+        }
+      }, 4000) as unknown as number;
+    }
   }
 
   function initElSocket() {
