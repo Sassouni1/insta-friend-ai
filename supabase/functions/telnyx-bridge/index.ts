@@ -208,8 +208,11 @@ Deno.serve(async (req) => {
             break;
           }
           // Raw µ-law passthrough — EL outputs ulaw_8000, Telnyx wants µ-law base64.
+          // stream_id is REQUIRED on outbound frames in bidirectional mode — without it
+          // Telnyx silently drops the frame and closes the WS after the greeting.
           telnyxSocket.send(JSON.stringify({
             event: "media",
+            stream_id: telnyxStreamId,
             media: { payload: b64 },
           }));
           if (!firstAgentAudioSent) {
