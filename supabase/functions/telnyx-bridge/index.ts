@@ -69,11 +69,32 @@ Deno.serve(async (req) => {
     return new Response("ElevenLabs agent not found", { status: 500 });
   }
 
-  const { socket: telnyxSocket, response } = Deno.upgradeWebSocket(req);
+  // Get a signed conversation URL so we can connect via WebSocket without custom headers
+  // (Deno's WebSocket constructor does not support a `headers` option — passing it throws "Invalid protocol value").
+  let signedUrl: string;
+  try {
+    const signRes = await fetch(
+      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${agentId}`,
+      { headers: { "xi-api-key": apiKey } },
+    );
+    if (!signRes.ok) {
+      const txt = await signRes.text();
+      console.error(`[bridge ${conversationId}] get-signed-url ${signRes.status}: ${txt.slice(0, 200)}`);
+      return new Response("Failed to get ElevenLabs signed URL", { status: 500 });
+    }
+    const signData = await signRes.json();
+    signedUrl = signData.signed_url;
+    if (!signedUrl) {
+      console.error(`[bridge ${conversationId}] no signed_url in response`);
+      return new Response("ElevenLabs signed URL missing", { status: 500 });
+    }
+  } catch (err) {
+    console.error(`[bridge ${conversationId}] signed url error`, err);
+    return new Response("ElevenLabs auth failed", { status: 500 });
+  }
 
-  // Connect to ElevenLabs
-  const elUrl = `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${agentId}`;
-  const elSocket = new WebSocket(elUrl, { headers: { "xi-api-key": apiKey } } as any);
+  const { socket: telnyxSocket, response } = Deno.upgradeWebSocket(req);
+  const elSocket = new WebSocket(signedUrl);
 
   let telnyxStreamId: string | null = null;
   let elReady = false;
