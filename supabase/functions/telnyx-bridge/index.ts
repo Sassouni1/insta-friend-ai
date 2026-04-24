@@ -118,10 +118,12 @@ Deno.serve(async (req) => {
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
   let bridgeClosed = false;
-  // Half-duplex echo gate: when EL is speaking, drop inbound caller frames
-  // (Telnyx bidirectional RTP loops our TTS back into the inbound track).
   let agentSpeakingUntil = 0;
+  let lastForwardedSpeechAt = 0;
   const AGENT_SPEAK_TAIL_MS = 600;
+  const INTERRUPTION_CLEAR_TAIL_MS = 150;
+  const RECENT_SPEECH_WINDOW_MS = 1200;
+  const INBOUND_SPEECH_THRESHOLD = 180;
   const pendingTelnyxAudio: string[] = [];
 
   console.log(`[bridge ${conversationId}] params tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
@@ -295,8 +297,6 @@ Deno.serve(async (req) => {
             stream_id: telnyxStreamId,
             media: { payload: telnyxPayload },
           }));
-          // Mark agent as speaking — playback duration ≈ samples / 8000 * 1000 ms.
-          // Telnyx PCMU is 8kHz mono so payload byte count == sample count.
           try {
             const playoutMs = Math.ceil((atob(telnyxPayload).length / 8000) * 1000);
             agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + playoutMs + AGENT_SPEAK_TAIL_MS);
@@ -351,12 +351,30 @@ Deno.serve(async (req) => {
           break;
         }
 
-        case "interruption":
-          agentSpeakingUntil = 0;
+        case "agent_response_correction": {
+          const corrected = msg.agent_response_correction_event?.corrected_agent_response;
+          if (corrected) {
+            console.log(`[bridge ${conversationId}] agent_response_correction: ${corrected.slice(0, 200)}`);
+          }
+          break;
+        }
+
+        case "interruption": {
+          const hadRecentCallerSpeech = Date.now() - lastForwardedSpeechAt < RECENT_SPEECH_WINDOW_MS;
+          console.log(`[bridge ${conversationId}] interruption from EL recentCallerSpeech=${hadRecentCallerSpeech}`);
+
+          if (!hadRecentCallerSpeech) {
+            agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + AGENT_SPEAK_TAIL_MS);
+            console.log(`[bridge ${conversationId}] ignoring interruption without recent caller speech`);
+            break;
+          }
+
+          agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
           if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
             telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
           }
           break;
+        }
       }
     };
 
@@ -416,24 +434,28 @@ Deno.serve(async (req) => {
             console.log(`[bridge ${conversationId}] FIRST caller audio received from Telnyx`);
           }
         }
-        // Every 100 frames, sample inbound energy so we can tell if mic audio is real or silence
-        if (telnyxMediaCount % 100 === 0) {
-          try {
-            const mulaw = base64ToUint8(payload);
-            const pcm = mulawToPcm16(mulaw);
-            let sum = 0;
-            for (let i = 0; i < pcm.length; i++) sum += Math.abs(pcm[i]);
-            const avg = Math.round(sum / pcm.length);
-            console.log(`[bridge ${conversationId}] inbound energy frame#${telnyxMediaCount} avg|sample|=${avg} (silence ~0, speech >500)`);
-          } catch {}
-        }
+
+        let inboundEnergy: number | null = null;
+        try {
+          const mulaw = base64ToUint8(payload);
+          const pcm = mulawToPcm16(mulaw);
+          let sum = 0;
+          for (let i = 0; i < pcm.length; i++) sum += Math.abs(pcm[i]);
+          inboundEnergy = Math.round(sum / pcm.length);
+          if (telnyxMediaCount % 100 === 0) {
+            console.log(`[bridge ${conversationId}] inbound energy frame#${telnyxMediaCount} avg|sample|=${inboundEnergy} (silence ~0, speech >500)`);
+          }
+        } catch {}
+
         if (telnyxMediaCount % 250 === 0) {
           console.log(`[bridge ${conversationId}] Telnyx media frames: ${telnyxMediaCount}`);
         }
         if (!elSocket && !elConnecting) initElSocket();
-        // Echo gate: while agent is speaking (and short tail after), drop inbound
-        // frames so EL doesn't transcribe its own TTS bleeding through Telnyx RTP.
+
         const muted = Date.now() < agentSpeakingUntil;
+        if (!muted && typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD) {
+          lastForwardedSpeechAt = Date.now();
+        }
         if (muted) {
           if (telnyxMediaCount % 250 === 0) {
             console.log(`[bridge ${conversationId}] echo-gate: dropping inbound (agent speaking)`);
