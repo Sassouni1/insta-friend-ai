@@ -1,14 +1,4 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import {
-  base64ToInt16,
-  base64ToUint8,
-  downsample16to8,
-  int16ToBase64,
-  pcm16ToMulaw,
-  mulawToPcm16,
-  uint8ToBase64,
-  upsample8to16,
-} from "../_shared/audio.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -104,7 +94,7 @@ Deno.serve(async (req) => {
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
   let bridgeClosed = false;
-  const pendingTelnyxAudio: Uint8Array[] = [];
+  const pendingTelnyxAudio: string[] = [];
 
   console.log(`[bridge ${conversationId}] params tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
 
@@ -134,16 +124,13 @@ Deno.serve(async (req) => {
       .then(() => {});
   };
 
-  function sendUserAudioToEL(mulawBytes: Uint8Array) {
+  function sendUserAudioToEL(mulawB64: string) {
     if (!elSocket || elSocket.readyState !== WebSocket.OPEN) return;
-    const pcm8k = mulawToPcm16(mulawBytes);
-    const pcm16k = upsample8to16(pcm8k);
-    elSocket.send(JSON.stringify({
-      user_audio_chunk: int16ToBase64(pcm16k),
-    }));
+    // Raw µ-law 8kHz passthrough — EL agent is configured for ulaw_8000.
+    elSocket.send(JSON.stringify({ user_audio_chunk: mulawB64 }));
     if (firstUserChunkSentAt === null) {
       firstUserChunkSentAt = Date.now();
-      console.log(`[bridge ${conversationId}] FIRST user_audio_chunk sent to EL (pcm_16000)`);
+      console.log(`[bridge ${conversationId}] FIRST user_audio_chunk sent to EL (ulaw_8000 raw passthrough)`);
       vadWarnTimer = setTimeout(() => {
         if (!firstVadLogged) {
           console.error(`[bridge ${conversationId}] WARN — 4s of audio sent, no vad_score from EL. Format mismatch likely.`);
@@ -162,14 +149,14 @@ Deno.serve(async (req) => {
 
     socket.onopen = () => {
       elConnecting = false;
-      console.log(`[bridge ${conversationId}] EL open — pinning pcm_16000 both directions`);
+      console.log(`[bridge ${conversationId}] EL open — pinning ulaw_8000 both directions`);
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
       socket.send(
         JSON.stringify({
           type: "conversation_initiation_client_data",
           conversation_config_override: {
-            asr: { user_input_audio_format: "pcm_16000" },
-            tts: { agent_output_audio_format: "pcm_16000" },
+            asr: { user_input_audio_format: "ulaw_8000" },
+            tts: { agent_output_audio_format: "ulaw_8000" },
             conversation: {
               client_events: [
                 "audio",
@@ -220,13 +207,10 @@ Deno.serve(async (req) => {
             console.log(`[bridge ${conversationId}] dropping EL audio — no Telnyx stream_id yet`);
             break;
           }
-          const pcm16k = base64ToInt16(b64);
-          const pcm8k = downsample16to8(pcm16k);
-          const mulaw = pcm16ToMulaw(pcm8k);
-          const payload = uint8ToBase64(mulaw);
+          // Raw µ-law passthrough — EL outputs ulaw_8000, Telnyx wants µ-law base64.
           telnyxSocket.send(JSON.stringify({
             event: "media",
-            media: { payload },
+            media: { payload: b64 },
           }));
           if (!firstAgentAudioSent) {
             firstAgentAudioSent = true;
@@ -338,11 +322,10 @@ Deno.serve(async (req) => {
           console.log(`[bridge ${conversationId}] Telnyx media frames: ${telnyxMediaCount}`);
         }
         if (!elSocket && !elConnecting) initElSocket();
-        const mulaw = base64ToUint8(payload);
         if (elReady && elSocket?.readyState === WebSocket.OPEN) {
-          sendUserAudioToEL(mulaw);
+          sendUserAudioToEL(payload);
         } else {
-          pendingTelnyxAudio.push(mulaw);
+          pendingTelnyxAudio.push(payload);
         }
         break;
       }

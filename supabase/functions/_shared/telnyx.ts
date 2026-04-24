@@ -27,10 +27,11 @@ export async function telnyxDial(params: {
   connection_id: string;
   stream_url?: string;
   stream_track?: "inbound_track" | "outbound_track" | "both_tracks";
-  // NOTE: stream_bidirectional_mode/codec intentionally omitted.
-  // Our bridge speaks the WebSocket JSON media protocol, not RTP-over-UDP.
-  // Setting bidirectional_mode causes Telnyx to fail stream negotiation.
   stream_codec?: "PCMU" | "PCMA" | "G722" | "OPUS";
+  // Required for the bridge to send agent audio BACK to Telnyx over the same WS.
+  // Without this, Telnyx opens an inbound-only stream and tears it down when we send media.
+  stream_bidirectional_mode?: "rtp";
+  stream_bidirectional_codec?: "PCMU" | "PCMA" | "G722" | "OPUS";
   client_state?: string;
   timeout_secs?: number;
 }): Promise<Response> {
