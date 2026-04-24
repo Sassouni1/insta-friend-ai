@@ -252,9 +252,17 @@ function VoiceAgentInner() {
         conversationIdRef.current = null;
       }
 
+      const sessionConfig: Record<string, unknown> = data?.signed_url
+        ? {
+            signedUrl: data.signed_url,
+          }
+        : {
+            connectionType: "webrtc",
+            conversationToken: data.token,
+          };
+
       await conversation.startSession({
-        connectionType: "webrtc",
-        conversationToken: data.token,
+        ...sessionConfig,
         dynamicVariables: {
           first_name: "",
           caller_name: "",
@@ -264,11 +272,6 @@ function VoiceAgentInner() {
           tenant_timezone: "America/Los_Angeles",
           tenant_id: "",
           conversation_id: conversationIdRef.current ?? "",
-        },
-        overrides: {
-          agent: {
-            firstMessage: "Hey — thanks for reaching out. Who do I have the pleasure of speaking with?",
-          },
         },
       } as any);
 
