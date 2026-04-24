@@ -118,6 +118,10 @@ Deno.serve(async (req) => {
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
   let bridgeClosed = false;
+  // Half-duplex echo gate: when EL is speaking, drop inbound caller frames
+  // (Telnyx bidirectional RTP loops our TTS back into the inbound track).
+  let agentSpeakingUntil = 0;
+  const AGENT_SPEAK_TAIL_MS = 600;
   const pendingTelnyxAudio: string[] = [];
 
   console.log(`[bridge ${conversationId}] params tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
