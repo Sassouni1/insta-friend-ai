@@ -171,6 +171,69 @@ export type Database = {
           },
         ]
       }
+      scheduled_calls: {
+        Row: {
+          attempts: number
+          conversation_id: string | null
+          created_at: string
+          fire_at: string
+          ghl_contact_id: string | null
+          id: string
+          last_error: string | null
+          lead_email: string | null
+          lead_name: string | null
+          lead_phone: string
+          status: string
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          attempts?: number
+          conversation_id?: string | null
+          created_at?: string
+          fire_at: string
+          ghl_contact_id?: string | null
+          id?: string
+          last_error?: string | null
+          lead_email?: string | null
+          lead_name?: string | null
+          lead_phone: string
+          status?: string
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          attempts?: number
+          conversation_id?: string | null
+          created_at?: string
+          fire_at?: string
+          ghl_contact_id?: string | null
+          id?: string
+          last_error?: string | null
+          lead_email?: string | null
+          lead_name?: string | null
+          lead_phone?: string
+          status?: string
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scheduled_calls_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scheduled_calls_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tenants: {
         Row: {
           active: boolean
@@ -186,6 +249,7 @@ export type Database = {
           oauth_imported: boolean
           timezone: string
           updated_at: string
+          webhook_secret: string | null
         }
         Insert: {
           active?: boolean
@@ -201,6 +265,7 @@ export type Database = {
           oauth_imported?: boolean
           timezone?: string
           updated_at?: string
+          webhook_secret?: string | null
         }
         Update: {
           active?: boolean
@@ -216,6 +281,7 @@ export type Database = {
           oauth_imported?: boolean
           timezone?: string
           updated_at?: string
+          webhook_secret?: string | null
         }
         Relationships: []
       }
