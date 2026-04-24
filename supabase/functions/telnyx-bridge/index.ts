@@ -405,6 +405,17 @@ Deno.serve(async (req) => {
             console.log(`[bridge ${conversationId}] FIRST caller audio received from Telnyx`);
           }
         }
+        // Every 100 frames, sample inbound energy so we can tell if mic audio is real or silence
+        if (telnyxMediaCount % 100 === 0) {
+          try {
+            const mulaw = base64ToUint8(payload);
+            const pcm = mulawToPcm16(mulaw);
+            let sum = 0;
+            for (let i = 0; i < pcm.length; i++) sum += Math.abs(pcm[i]);
+            const avg = Math.round(sum / pcm.length);
+            console.log(`[bridge ${conversationId}] inbound energy frame#${telnyxMediaCount} avg|sample|=${avg} (silence ~0, speech >500)`);
+          } catch {}
+        }
         if (telnyxMediaCount % 250 === 0) {
           console.log(`[bridge ${conversationId}] Telnyx media frames: ${telnyxMediaCount}`);
         }

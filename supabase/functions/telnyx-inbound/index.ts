@@ -87,10 +87,12 @@ serve(async (req) => {
 
   const streamUrl = `${BRIDGE_WS_URL}?conv=${convRow.id}&tenant=${phoneRow.tenant_id}&caller=${encodeURIComponent(fromNumber)}`;
 
-  // Answer the call with media streaming (WebSocket JSON protocol — no RTP bidirectional mode)
+  // Answer with WebSocket bidirectional streaming. inbound_track = caller's mic only
+  // (we don't need our own TTS echoed back). bidirectional_mode=rtp lets us send
+  // playback audio back via Telnyx WS `media` frames.
   const answerRes = await telnyxCallControl(callControlId, "answer", {
     stream_url: streamUrl,
-    stream_track: "both_tracks",
+    stream_track: "inbound_track",
     stream_codec: "PCMU",
     stream_bidirectional_mode: "rtp",
     stream_bidirectional_codec: "PCMU",
