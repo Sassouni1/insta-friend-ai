@@ -77,7 +77,7 @@ Wait.
 
 STAGE 2 — Context reminder
 Goal: remind them why you're calling.
-Say: "Got it. This is Sam with {{company_name}} — you were looking into hair systems or options for hair loss. Does that sound right?"
+Say: "Got it. This is Sam with {{company_name}} — you were looking into hair systems or options for hair loss. Does that ring a bell?"
 Wait.
 
 STAGE 3 — Discovery
