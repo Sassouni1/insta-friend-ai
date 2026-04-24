@@ -190,30 +190,16 @@ export function VoiceAgent() {
     }
 
     try {
-      // Request mic access first so the browser prompts the user and the default input is ready.
-      // Let the ElevenLabs SDK use the active default device instead of forcing the first enumerated mic,
-      // which can be stale or invalid in remixed projects / browser sessions.
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error("This browser does not support microphone access (mediaDevices unavailable). Try Chrome or Edge over HTTPS.");
       }
 
-      const preflightStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const audioInputs = devices.filter((d) => d.kind === "audioinput");
-        addDiagEvent("media_devices", `audio inputs: ${audioInputs.length}`);
-      } catch (enumErr) {
-        console.warn("enumerateDevices failed (non-critical):", enumErr);
-      }
-
-      preflightStream.getTracks().forEach((track) => track.stop());
+      // Do not run a custom microphone preflight here.
+      // In this project that step is what is throwing NotFoundError before any backend call happens.
+      // Let the ElevenLabs SDK acquire the active default mic itself during startSession,
+      // which matches the simpler flow used in the working project.
+      addDiagEvent("media_setup", "using SDK mic acquisition");
+      console.log("[VoiceAgent] Skipping custom getUserMedia preflight and using SDK mic acquisition");
 
       const { data, error: fnError } = await supabase.functions.invoke(
         "elevenlabs-conversation-token"
