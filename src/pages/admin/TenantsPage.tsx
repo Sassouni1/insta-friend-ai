@@ -127,58 +127,60 @@ export default function TenantsPage() {
       <div className="flex items-center justify-between mb-6 gap-2 flex-wrap">
         <h1 className="text-2xl font-semibold">Tenants</h1>
         <div className="flex gap-2 flex-wrap">
-          <Button variant="outline" onClick={connectAgency} disabled={connecting}>
-            {connecting ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Link2 className="w-4 h-4 mr-1" />}
-            Connect CRM agency
-          </Button>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={openNew}><Plus className="w-4 h-4 mr-1" />New tenant</Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-lg">
-            <DialogHeader>
-              <DialogTitle>{editing ? "Edit tenant" : "New tenant"}</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-3">
-              <div><Label>Name</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
-              <div><Label>GoHighLevel location ID</Label><Input value={form.ghl_location_id} onChange={(e) => setForm({ ...form, ghl_location_id: e.target.value })} /></div>
-              <div><Label>GoHighLevel API token (Private Integration)</Label><Input type="password" value={form.ghl_api_token} onChange={(e) => setForm({ ...form, ghl_api_token: e.target.value })} /></div>
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <Label>Calendar</Label>
-                  {editing && (
-                    <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => loadCalendars(editing.id)} disabled={loadingCalendars}>
-                      {loadingCalendars ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                    </Button>
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+              <Button variant="outline" onClick={openNew}>
+                <Plus className="w-4 h-4 mr-1" />Add manually
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>{editing ? "Edit tenant" : "New tenant (manual)"}</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3">
+                <div><Label>Name</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
+                <div><Label>CRM location ID</Label><Input value={form.ghl_location_id} onChange={(e) => setForm({ ...form, ghl_location_id: e.target.value })} /></div>
+                <div><Label>CRM API token (Private Integration)</Label><Input type="password" value={form.ghl_api_token} onChange={(e) => setForm({ ...form, ghl_api_token: e.target.value })} /></div>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <Label>Calendar</Label>
+                    {editing && (
+                      <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => loadCalendars(editing.id)} disabled={loadingCalendars}>
+                        {loadingCalendars ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                      </Button>
+                    )}
+                  </div>
+                  {calendars.length > 0 ? (
+                    <Select value={form.ghl_calendar_id} onValueChange={(v) => setForm({ ...form, ghl_calendar_id: v })}>
+                      <SelectTrigger><SelectValue placeholder="Select a calendar" /></SelectTrigger>
+                      <SelectContent>
+                        {calendars.map((c) => (
+                          <SelectItem key={c.id} value={c.id}>{c.name}{c.isActive === false ? " (inactive)" : ""}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input
+                      placeholder={loadingCalendars ? "Loading calendars..." : (editing ? "No calendars found — paste ID manually" : "Save tenant first, then pick a calendar")}
+                      value={form.ghl_calendar_id}
+                      onChange={(e) => setForm({ ...form, ghl_calendar_id: e.target.value })}
+                      disabled={loadingCalendars}
+                    />
                   )}
                 </div>
-                {calendars.length > 0 ? (
-                  <Select value={form.ghl_calendar_id} onValueChange={(v) => setForm({ ...form, ghl_calendar_id: v })}>
-                    <SelectTrigger><SelectValue placeholder="Select a calendar" /></SelectTrigger>
-                    <SelectContent>
-                      {calendars.map((c) => (
-                        <SelectItem key={c.id} value={c.id}>{c.name}{c.isActive === false ? " (inactive)" : ""}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Input
-                    placeholder={loadingCalendars ? "Loading calendars..." : (editing ? "No calendars found — paste ID manually" : "Save tenant first, then pick a calendar")}
-                    value={form.ghl_calendar_id}
-                    onChange={(e) => setForm({ ...form, ghl_calendar_id: e.target.value })}
-                    disabled={loadingCalendars}
-                  />
-                )}
+                <div><Label>Timezone (IANA)</Label><Input value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} /></div>
+                <div className="flex items-center gap-2"><input type="checkbox" id="active" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} /><Label htmlFor="active">Active</Label></div>
               </div>
-              <div><Label>Timezone (IANA)</Label><Input value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} /></div>
-              <div className="flex items-center gap-2"><input type="checkbox" id="active" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} /><Label htmlFor="active">Active</Label></div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button onClick={save}>{editing ? "Save" : "Create"}</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+                <Button onClick={save}>{editing ? "Save" : "Create"}</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+          <Button onClick={connectAgency} disabled={connecting}>
+            {connecting ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Plus className="w-4 h-4 mr-1" />}
+            Add tenant via CRM
+          </Button>
         </div>
       </div>
 
