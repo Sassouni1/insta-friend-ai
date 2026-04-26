@@ -18,7 +18,7 @@ verify_jwt = false
 [functions.lead-opt-in-webhook]
 verify_jwt = false
 
-[functions.ghl-contact-webhook]
+[functions.crm-contact-webhook]
 verify_jwt = false
 
 [functions.ghl-list-contacts-debug]
