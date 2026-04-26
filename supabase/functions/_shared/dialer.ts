@@ -173,9 +173,14 @@ async function wasAnswered(supabase: SupabaseAny, conversationId: string): Promi
       console.log(`[dial] non-human transcript ignored: "${txt.slice(0, 80)}"`);
       continue;
     }
+    if (/^(yes|yeah|yep|no|name|hello|hi|okay|ok)$/i.test(txt.replace(/[.?!]/g, "").trim())) {
+      console.log(`[dial] weak/generic transcript ignored: "${txt.slice(0, 80)}"`);
+      continue;
+    }
     // Require at least 2 chars of real speech so single noise tokens don't count.
-    if (txt.replace(/[^a-z0-9]/gi, "").length >= 2) return true;
+    if (txt.replace(/[^a-z0-9]/gi, "").length >= 8) return true;
   }
+  console.log(`[dial] not human answered: no reliable human transcript for ${conversationId}`);
   return false;
 }
 
