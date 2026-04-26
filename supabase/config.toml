@@ -20,3 +20,6 @@ verify_jwt = false
 
 [functions.ghl-contact-webhook]
 verify_jwt = false
+
+[functions.ghl-list-contacts-debug]
+verify_jwt = false
