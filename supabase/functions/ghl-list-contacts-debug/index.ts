@@ -27,9 +27,7 @@ serve(async (req) => {
 
   // Start of current month UTC
   const now = new Date();
-  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCFullYear() && now.getUTCMonth(), 1));
-  startOfMonth.setUTCDate(1);
-  startOfMonth.setUTCHours(0, 0, 0, 0);
+  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
 
   const body = {
     locationId,
