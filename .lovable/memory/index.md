@@ -20,3 +20,4 @@ Sam's persona, memory, and booking logic must live in project code/backend as th
 - [ElevenLabs Config](mem://integrations/elevenlabs-api-configuration) — ELEVENLABS_API_KEY_CUSTOM with convai_* permissions in Supabase
 - [Billing Model](mem://business/billing-model) — Agency absorption via GHL SaaS markup for client usage
 - [Agent logic source](mem://preferences/agent-logic-source) — Sam's logic and memory must be controlled from backend code, not only dashboard settings
+- [Outbound call SIP 487 timeout diagnosis](mem://debugging/outbound-call-failures) — SIP 487 + no call.answered = carrier spam filter on Telnyx DID, NOT a code bug; do not modify dialer code to fix this
