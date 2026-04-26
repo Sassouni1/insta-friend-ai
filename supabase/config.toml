@@ -26,3 +26,6 @@ verify_jwt = false
 
 [functions.admin-create-user]
 verify_jwt = false
+
+[functions.ghl-test-contact-debug]
+verify_jwt = false
