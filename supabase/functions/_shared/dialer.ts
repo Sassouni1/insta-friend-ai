@@ -77,8 +77,10 @@ export async function placeDial(opts: {
     from: phoneRow.e164_number,
     connection_id: phoneRow.telnyx_connection_id,
     stream_url: streamUrl,
-    stream_track: "both_tracks",
+    stream_track: "inbound_track",
     stream_codec: "PCMU",
+    stream_bidirectional_mode: "rtp",
+    stream_bidirectional_codec: "PCMU",
     timeout_secs: RING_TIMEOUT_SECS,
   });
 
