@@ -461,6 +461,8 @@ Deno.serve(async (req) => {
 
         const muted = Date.now() < agentSpeakingUntil;
         if (!muted && typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD) {
+          inboundSpeechFrameCount++;
+          if (!firstInboundSpeechAt) firstInboundSpeechAt = new Date().toISOString();
           lastForwardedSpeechAt = Date.now();
         }
         if (muted) {
