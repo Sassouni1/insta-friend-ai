@@ -21,7 +21,7 @@ function resolveElevenLabsKey(): string {
   );
 }
 
-async function getOrFetchAgentId(supabase: ReturnType<typeof createClient>, apiKey: string): Promise<string | null> {
+async function getOrFetchAgentId(supabase: any, apiKey: string): Promise<string | null> {
   const envAgentId = Deno.env.get("ELEVENLABS_AGENT_ID")?.trim();
   if (envAgentId) return envAgentId;
 
