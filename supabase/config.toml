@@ -23,3 +23,6 @@ verify_jwt = false
 
 [functions.ghl-list-contacts-debug]
 verify_jwt = false
+
+[functions.admin-create-user]
+verify_jwt = false
