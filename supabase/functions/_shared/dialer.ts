@@ -90,11 +90,18 @@ export async function placeDial(opts: {
   }
 
   const dialData = await dialRes.json();
-  const callControlId = dialData?.data?.call_control_id ?? null;
+  const dialPayload = dialData?.data ?? {};
+  const callControlId = dialPayload?.call_control_id ?? null;
   if (callControlId) {
     await supabase
       .from("conversations")
-      .update({ telnyx_call_control_id: callControlId })
+      .update({
+        telnyx_call_control_id: callControlId,
+        telnyx_call_session_id: dialPayload?.call_session_id ?? null,
+        telnyx_call_leg_id: dialPayload?.call_leg_id ?? null,
+        telnyx_call_status: "dial_request_accepted",
+        telnyx_event_payload: dialPayload,
+      })
       .eq("id", convRow.id);
   }
   return { conversationId: convRow.id, callControlId };
@@ -116,6 +123,34 @@ const NON_HUMAN_PATTERNS = [
 ];
 
 async function wasAnswered(supabase: SupabaseAny, conversationId: string): Promise<boolean> {
+  const { data: callRow, error: callErr } = await supabase
+    .from("conversations")
+    .select("telnyx_answered_at, telnyx_hangup_cause, telnyx_sip_code, telnyx_call_status, media_frame_count, inbound_speech_frame_count, first_inbound_speech_at")
+    .eq("id", conversationId)
+    .maybeSingle();
+
+  if (callErr) {
+    console.error("[dial] call outcome query error:", callErr.message);
+    return false;
+  }
+
+  if (!callRow?.telnyx_answered_at) {
+    console.log(`[dial] not answered: no Telnyx call.answered webhook for ${conversationId}`);
+    return false;
+  }
+
+  const hangupCause = String(callRow.telnyx_hangup_cause || "").toLowerCase();
+  if (/no_answer|busy|failed|rejected|timeout|cancel|unallocated|unreachable/.test(hangupCause)) {
+    console.log(`[dial] not answered: Telnyx hangup cause=${hangupCause || "unknown"} sip=${callRow.telnyx_sip_code ?? "-"}`);
+    return false;
+  }
+
+  const speechFrames = Number(callRow.inbound_speech_frame_count || 0);
+  if (speechFrames < 25 || !callRow.first_inbound_speech_at) {
+    console.log(`[dial] not human answered: answered webhook exists, but only ${speechFrames} confident inbound speech frames`);
+    return false;
+  }
+
   // Only inbound caller speech counts — never agent audio, never empty placeholders,
   // never carrier/voicemail intercepts. This is what triggers (or suppresses) the retry.
   const { data, error } = await supabase
