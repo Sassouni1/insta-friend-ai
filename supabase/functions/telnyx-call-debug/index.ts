@@ -16,9 +16,10 @@ serve(async (req) => {
   });
   const callJson = await callRes.json().catch(() => ({}));
 
-  // Get call events
+  const legId = url.searchParams.get("leg_id");
+  // Get call events by leg_id (uuid form, not v3:... ccid)
   const eventsRes = await fetch(
-    `https://api.telnyx.com/v2/call_events?filter[call_leg_id]=${encodeURIComponent(ccid)}&page[size]=50`,
+    `https://api.telnyx.com/v2/call_events?filter[call_leg_id]=${encodeURIComponent(legId || callJson?.data?.call_leg_id || "")}&page[size]=50`,
     { headers: { Authorization: `Bearer ${apiKey}` } },
   );
   const eventsJson = await eventsRes.json().catch(() => ({}));
