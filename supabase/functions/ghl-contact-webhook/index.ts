@@ -43,9 +43,9 @@ async function getGhlPublicKey(): Promise<CryptoKey> {
   if (cachedKey) return cachedKey;
   const der = pemToDer(GHL_PUBLIC_KEY_PEM);
   cachedKey = await crypto.subtle.importKey(
-    "spki",
-    der,
-    { name: "Ed25519" },
+    "spki" as any,
+    der as any,
+    { name: "Ed25519" } as any,
     false,
     ["verify"],
   );
@@ -57,7 +57,7 @@ async function verifyGhlSignature(rawBody: string, signatureB64: string): Promis
     const key = await getGhlPublicKey();
     const sig = Uint8Array.from(atob(signatureB64), (c) => c.charCodeAt(0));
     const data = new TextEncoder().encode(rawBody);
-    return await crypto.subtle.verify("Ed25519", key, sig, data);
+    return await crypto.subtle.verify("Ed25519" as any, key, sig as any, data as any);
   } catch (err) {
     console.error("[ghl-webhook] sig verify error", err);
     return false;
@@ -129,13 +129,14 @@ serve(async (req) => {
     return jsonResponse({ ok: true, ignored: "no locationId" });
   }
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  const supabase: any = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-  const { data: tenant } = await supabase
+  const { data: tenantRaw } = await supabase
     .from("tenants")
     .select("id, name, active")
     .eq("ghl_location_id", locationId)
     .maybeSingle();
+  const tenant = tenantRaw as { id: string; name: string; active: boolean } | null;
 
   if (!tenant) {
     console.log(`[ghl-webhook] no tenant for location ${locationId}`);
