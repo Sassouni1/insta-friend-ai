@@ -101,14 +101,20 @@ export function flattenSlots(slotMap: Record<string, { slots: string[] }>): stri
  * Persists the new token + expiry back to the tenants row.
  */
 export async function getFreshGhlToken(
-  supabase: ReturnType<typeof createClient>,
+  supabase: any,
   tenantId: string,
 ): Promise<{ token: string; locationId: string }> {
-  const { data: tenant, error } = await supabase
+  const { data: tenantRaw, error } = await supabase
     .from("tenants")
     .select("ghl_api_token, ghl_refresh_token, ghl_token_expires_at, ghl_location_id")
     .eq("id", tenantId)
     .maybeSingle();
+  const tenant = tenantRaw as {
+    ghl_api_token: string | null;
+    ghl_refresh_token: string | null;
+    ghl_token_expires_at: string | null;
+    ghl_location_id: string | null;
+  } | null;
 
   if (error || !tenant) throw new Error(`tenant ${tenantId} not found`);
   if (!tenant.ghl_location_id) throw new Error(`tenant ${tenantId} has no ghl_location_id`);

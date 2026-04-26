@@ -2,6 +2,11 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { telnyxDial } from "./telnyx.ts";
 
+// Loose alias — Deno's strict typing on createClient<unknown> infers `never` for
+// schema, which breaks .from() chaining across modules. We treat the client as
+// any inside dialer code; runtime behavior is unaffected.
+type SupabaseAny = any;
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const BRIDGE_WS_URL = `wss://${new URL(SUPABASE_URL).host.replace(".supabase.co", ".functions.supabase.co")}/telnyx-bridge`;
@@ -10,13 +15,19 @@ const RING_TIMEOUT_SECS = 25;
 const RETRY_WAIT_MS = 35_000;
 
 export async function placeDial(opts: {
-  supabase: ReturnType<typeof createClient>;
+  supabase: SupabaseAny;
   tenantId: string;
   leadPhone: string;
   leadName: string | null;
   leadEmail: string | null;
 }): Promise<{ conversationId: string; callControlId: string | null }> {
-  const { supabase, tenantId, leadPhone, leadName, leadEmail } = opts;
+  const { supabase, tenantId, leadPhone, leadName, leadEmail } = opts as {
+    supabase: SupabaseAny;
+    tenantId: string;
+    leadPhone: string;
+    leadName: string | null;
+    leadEmail: string | null;
+  };
 
   const [{ data: phoneRow }, { data: tenantRow }] = await Promise.all([
     supabase
@@ -87,7 +98,7 @@ export async function placeDial(opts: {
   return { conversationId: convRow.id, callControlId };
 }
 
-async function wasAnswered(supabase: ReturnType<typeof createClient>, conversationId: string): Promise<boolean> {
+async function wasAnswered(supabase: SupabaseAny, conversationId: string): Promise<boolean> {
   const { count } = await supabase
     .from("transcript_entries")
     .select("id", { count: "exact", head: true })
@@ -96,7 +107,7 @@ async function wasAnswered(supabase: ReturnType<typeof createClient>, conversati
 }
 
 export async function fireCall(scheduledId: string, logTag = "dial") {
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  const supabase: SupabaseAny = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
   const { data: claimed } = await supabase
     .from("scheduled_calls")
