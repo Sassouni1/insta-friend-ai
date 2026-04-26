@@ -152,15 +152,16 @@ serve(async (req) => {
   let email: string | null = body?.email || body?.contact?.email || body?.data?.email || null;
   const contactId: string | null = body?.id || body?.contact?.id || body?.data?.id || null;
 
+  const tenantId = tenant.id;
   let ghlClient: GhlClient | null = null;
   async function ensureGhl(): Promise<GhlClient | null> {
     if (ghlClient) return ghlClient;
     try {
-      const { token, locationId: locId } = await getFreshGhlToken(supabase, tenant.id);
+      const { token, locationId: locId } = await getFreshGhlToken(supabase, tenantId);
       ghlClient = new GhlClient(token, locId);
       return ghlClient;
     } catch (err: any) {
-      console.error(`[ghl-webhook] token fetch failed for ${tenant.id}:`, err.message);
+      console.error(`[ghl-webhook] token fetch failed for ${tenantId}:`, err.message);
       return null;
     }
   }
