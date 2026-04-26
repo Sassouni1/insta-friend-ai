@@ -36,6 +36,28 @@ serve(async (req) => {
   const eventType = event?.data?.event_type;
   const payload = event?.data?.payload || {};
   console.log(`[telnyx-inbound] event: ${eventType}`);
+  const callControlIdFromEvent = payload.call_control_id;
+  const callSessionIdFromEvent = payload.call_session_id;
+
+  if (eventType && callControlIdFromEvent && eventType !== "call.initiated") {
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const update: Record<string, unknown> = {
+      telnyx_call_status: eventType,
+      telnyx_event_payload: payload,
+    };
+    if (callSessionIdFromEvent) update.telnyx_call_session_id = callSessionIdFromEvent;
+    if (payload.call_leg_id) update.telnyx_call_leg_id = payload.call_leg_id;
+    if (eventType === "call.answered") update.telnyx_answered_at = new Date().toISOString();
+    if (eventType === "call.hangup") {
+      update.telnyx_hangup_cause = payload.hangup_cause || payload.cause || null;
+      update.telnyx_hangup_source = payload.hangup_source || null;
+      update.telnyx_sip_code = payload.sip_hangup_cause || payload.sip_code || payload.sip_response_code || null;
+      console.log(
+        `[telnyx-inbound] hangup outcome to=${payload.to || "-"} from=${payload.from || "-"} cause=${update.telnyx_hangup_cause || "-"} sip=${update.telnyx_sip_code || "-"}`,
+      );
+    }
+    await supabase.from("conversations").update(update).eq("telnyx_call_control_id", callControlIdFromEvent);
+  }
 
   // Log full payload of streaming.failed so we can see exactly what Telnyx is rejecting.
   if (eventType === "streaming.failed") {
