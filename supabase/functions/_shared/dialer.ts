@@ -100,12 +100,48 @@ export async function placeDial(opts: {
   return { conversationId: convRow.id, callControlId };
 }
 
+// Voicemail / carrier-intercept phrases that must NOT count as a human answer.
+const NON_HUMAN_PATTERNS = [
+  /at the tone/i,
+  /please record/i,
+  /leave (a )?message/i,
+  /not available/i,
+  /voice ?mail/i,
+  /please try (your call )?again/i,
+  /couldn'?t hear you/i,
+  /the (person|number) you (are|have) (trying to reach|called)/i,
+  /has been forwarded/i,
+  /mailbox/i,
+  /google (subscriber|voice)/i,
+];
+
 async function wasAnswered(supabase: SupabaseAny, conversationId: string): Promise<boolean> {
-  const { count } = await supabase
+  // Only inbound caller speech counts — never agent audio, never empty placeholders,
+  // never carrier/voicemail intercepts. This is what triggers (or suppresses) the retry.
+  const { data, error } = await supabase
     .from("transcript_entries")
-    .select("id", { count: "exact", head: true })
-    .eq("conversation_id", conversationId);
-  return (count ?? 0) > 0;
+    .select("role, text")
+    .eq("conversation_id", conversationId)
+    .eq("role", "user");
+
+  if (error) {
+    console.error("[dial] wasAnswered query error:", error.message);
+    return false;
+  }
+
+  const rows = (data ?? []) as Array<{ role: string; text: string | null }>;
+  for (const row of rows) {
+    const txt = (row.text ?? "").trim();
+    if (!txt) continue;
+    if (txt === "..." || txt === "…") continue;
+    if (NON_HUMAN_PATTERNS.some((re) => re.test(txt))) {
+      console.log(`[dial] non-human transcript ignored: "${txt.slice(0, 80)}"`);
+      continue;
+    }
+    // Require at least 2 chars of real speech so single noise tokens don't count.
+    if (txt.replace(/[^a-z0-9]/gi, "").length >= 2) return true;
+  }
+  return false;
 }
 
 export async function fireCall(scheduledId: string, logTag = "dial") {
