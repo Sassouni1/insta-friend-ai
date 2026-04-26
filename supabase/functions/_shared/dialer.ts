@@ -11,8 +11,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const BRIDGE_WS_URL = `wss://${new URL(SUPABASE_URL).host.replace(".supabase.co", ".functions.supabase.co")}/telnyx-bridge`;
 
-const RING_TIMEOUT_SECS = 25;
-const RETRY_WAIT_MS = 35_000;
+const RETRY_WAIT_MS = 75_000;
 
 export async function placeDial(opts: {
   supabase: SupabaseAny;
@@ -81,7 +80,6 @@ export async function placeDial(opts: {
     stream_codec: "PCMU",
     stream_bidirectional_mode: "rtp",
     stream_bidirectional_codec: "PCMU",
-    timeout_secs: RING_TIMEOUT_SECS,
   });
 
   if (!dialRes.ok) {
