@@ -75,9 +75,20 @@ export type Database = {
           created_at: string
           direction: string
           ended_at: string | null
+          first_inbound_speech_at: string | null
           id: string
+          inbound_speech_frame_count: number
+          media_frame_count: number
           started_at: string
+          telnyx_answered_at: string | null
           telnyx_call_control_id: string | null
+          telnyx_call_leg_id: string | null
+          telnyx_call_session_id: string | null
+          telnyx_call_status: string | null
+          telnyx_event_payload: Json | null
+          telnyx_hangup_cause: string | null
+          telnyx_hangup_source: string | null
+          telnyx_sip_code: number | null
           tenant_id: string | null
         }
         Insert: {
@@ -86,9 +97,20 @@ export type Database = {
           created_at?: string
           direction?: string
           ended_at?: string | null
+          first_inbound_speech_at?: string | null
           id?: string
+          inbound_speech_frame_count?: number
+          media_frame_count?: number
           started_at?: string
+          telnyx_answered_at?: string | null
           telnyx_call_control_id?: string | null
+          telnyx_call_leg_id?: string | null
+          telnyx_call_session_id?: string | null
+          telnyx_call_status?: string | null
+          telnyx_event_payload?: Json | null
+          telnyx_hangup_cause?: string | null
+          telnyx_hangup_source?: string | null
+          telnyx_sip_code?: number | null
           tenant_id?: string | null
         }
         Update: {
@@ -97,9 +119,20 @@ export type Database = {
           created_at?: string
           direction?: string
           ended_at?: string | null
+          first_inbound_speech_at?: string | null
           id?: string
+          inbound_speech_frame_count?: number
+          media_frame_count?: number
           started_at?: string
+          telnyx_answered_at?: string | null
           telnyx_call_control_id?: string | null
+          telnyx_call_leg_id?: string | null
+          telnyx_call_session_id?: string | null
+          telnyx_call_status?: string | null
+          telnyx_event_payload?: Json | null
+          telnyx_hangup_cause?: string | null
+          telnyx_hangup_source?: string | null
+          telnyx_sip_code?: number | null
           tenant_id?: string | null
         }
         Relationships: [
