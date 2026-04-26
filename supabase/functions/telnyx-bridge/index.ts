@@ -117,6 +117,8 @@ Deno.serve(async (req) => {
   let vadWarnTimer: number | null = null;
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
+  let inboundSpeechFrameCount = 0;
+  let firstInboundSpeechAt: string | null = null;
   let bridgeClosed = false;
   let agentSpeakingUntil = 0;
   let lastForwardedSpeechAt = 0;
@@ -149,7 +151,12 @@ Deno.serve(async (req) => {
     } catch {}
     supabase
       .from("conversations")
-      .update({ ended_at: new Date().toISOString() })
+      .update({
+        ended_at: new Date().toISOString(),
+        media_frame_count: telnyxMediaCount,
+        inbound_speech_frame_count: inboundSpeechFrameCount,
+        first_inbound_speech_at: firstInboundSpeechAt,
+      })
       .eq("id", conversationId)
       .then(() => {});
   };
