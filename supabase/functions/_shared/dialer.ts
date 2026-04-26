@@ -183,7 +183,7 @@ export async function fireCall(scheduledId: string, logTag = "dial") {
       return;
     }
 
-    console.log(`[${logTag}] ${claimed.lead_phone} no-answer on attempt 1, retrying...`);
+    console.log(`[${logTag}] ${claimed.lead_phone} no human speech detected on attempt 1 — retrying`);
 
     const second = await placeDial({
       supabase,
