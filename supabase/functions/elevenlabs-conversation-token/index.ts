@@ -279,11 +279,14 @@ async function elevenLabsOp(
   }
 }
 
-function resolveApiKey(): { key: string; source: string } {
+function resolveApiKey(preferred?: string): { key: string; source: string } {
   const custom = Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim();
   const connector = Deno.env.get("ELEVENLABS_API_KEY")?.trim();
-  if (custom) return { key: custom, source: "custom" };
+  if (preferred === "custom" && custom) return { key: custom, source: "custom" };
+  if (preferred === "connector" && connector) return { key: connector, source: "connector" };
+  // Default: prefer connector over custom
   if (connector) return { key: connector, source: "connector" };
+  if (custom) return { key: custom, source: "custom" };
   throw new Error("No ElevenLabs API key configured");
 }
 

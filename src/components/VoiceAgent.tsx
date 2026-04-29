@@ -214,7 +214,8 @@ function VoiceAgentInner() {
       console.log("[VoiceAgent] Skipping custom getUserMedia preflight and using SDK mic acquisition");
 
       const { data, error: fnError } = await supabase.functions.invoke(
-        "elevenlabs-conversation-token"
+        "elevenlabs-conversation-token",
+        { body: { key_source: "connector" } }
       );
 
       if (fnError) {
@@ -264,17 +265,9 @@ function VoiceAgentInner() {
         conversationIdRef.current = null;
       }
 
-      const sessionConfig: Record<string, unknown> = data?.signed_url
-        ? {
-            signedUrl: data.signed_url,
-          }
-        : {
-            connectionType: "webrtc",
-            conversationToken: data.token,
-          };
-
       await conversation.startSession({
-        ...sessionConfig,
+        connectionType: "webrtc",
+        conversationToken: data.token,
         dynamicVariables: {
           first_name: "",
           caller_name: "",
