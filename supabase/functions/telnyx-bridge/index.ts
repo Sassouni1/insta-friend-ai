@@ -47,7 +47,7 @@ You are speaking to Sam, who is the sales appointment setter.
 Your job is to behave like a real lead and respond to Sam's questions.
 
 Rules:
-- Wait for Sam to speak first.
+- Start by answering the phone naturally with: "Hi, this is Chris."
 - Do not reveal that you are an AI, bot, or test caller.
 - Keep responses natural and brief.
 - Answer one question at a time.
@@ -141,7 +141,7 @@ function buildChrisConversationConfig(script: string) {
   return {
     agent: {
       prompt: { prompt: buildChrisPrompt(script) },
-      first_message: "",
+      first_message: "Hi, this is Chris.",
       language: "en",
     },
     turn: {
