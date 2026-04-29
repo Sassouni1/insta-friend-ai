@@ -31,6 +31,18 @@ interface DiagnosticInfo {
   vadScore?: number;
 }
 
+function formatConversationError(message: string) {
+  if (/Permission denied|NotAllowedError|PermissionDismissedError|microphone permission/i.test(message)) {
+    return "Microphone permission was denied. Allow microphone access for this site in your browser, then try again.";
+  }
+
+  if (/Requested device not found|NotFoundError/i.test(message)) {
+    return "No usable microphone was found. Check browser mic permissions, reconnect your mic, then try again.";
+  }
+
+  return message;
+}
+
 function VoiceAgentInner() {
   const [isConnecting, setIsConnecting] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
@@ -144,7 +156,7 @@ function VoiceAgentInner() {
     onError: (err: any) => {
       console.error("Conversation error:", err);
       const errMsg = typeof err === "string" ? err : err?.message || JSON.stringify(err);
-      setError(errMsg);
+      setError(formatConversationError(errMsg));
       setDiag((d) => ({ ...d, lastError: errMsg }));
       addDiagEvent("error", errMsg);
     },
@@ -314,11 +326,7 @@ function VoiceAgentInner() {
     } catch (err: any) {
       console.error("Failed to start conversation:", err);
       const message = err?.message || "Failed to connect. Please try again.";
-      if (/Requested device not found|NotFoundError/i.test(message)) {
-        setError("No usable microphone was found. Check browser mic permissions, reconnect your mic, then try again.");
-      } else {
-        setError(message);
-      }
+      setError(formatConversationError(message));
     } finally {
       setIsConnecting(false);
     }
