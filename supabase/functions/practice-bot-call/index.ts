@@ -127,7 +127,7 @@ serve(async (req) => {
     from: fromRow.e164_number,
     connection_id: fromRow.telnyx_connection_id,
     stream_url: `${BRIDGE_WS_URL}?${params.toString()}`,
-    stream_track: "inbound_track",
+    stream_track: "both_tracks",
     stream_codec: "PCMU",
     stream_bidirectional_mode: "rtp",
     stream_bidirectional_codec: "PCMU",
