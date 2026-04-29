@@ -481,7 +481,7 @@ Deno.serve(async (req) => {
       if (botKind === "chris") {
         conversationConfigOverride.agent = {
           prompt: { prompt: buildChrisPrompt(practiceScript) },
-          first_message: "Hey, this is Chris. I was calling about hair systems.",
+          first_message: "Hey, this is Chris.",
           language: "en",
         };
         conversationConfigOverride.turn = {
