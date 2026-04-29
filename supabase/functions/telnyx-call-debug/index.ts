@@ -10,6 +10,16 @@ serve(async (req) => {
   const ccid = url.searchParams.get("ccid");
   if (!ccid) return jsonResponse({ error: "ccid required" }, 400);
 
+  if (req.method === "POST" && url.searchParams.get("action") === "hangup") {
+    const hangupRes = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(ccid)}/actions/hangup`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const hangupJson = await hangupRes.json().catch(() => ({}));
+    return jsonResponse({ status: hangupRes.status, body: hangupJson });
+  }
+
   // Get the call record
   const callRes = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(ccid)}`, {
     headers: { Authorization: `Bearer ${apiKey}` },
