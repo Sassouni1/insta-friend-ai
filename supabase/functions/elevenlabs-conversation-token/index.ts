@@ -177,8 +177,8 @@ const SAM_CONVERSATION_CONFIG = {
   },
   turn: {
     mode: "turn",
-    turn_timeout: 4,
-    turn_eagerness: "eager",
+    turn_timeout: -1,
+    turn_eagerness: "normal",
   },
   asr: {
     quality: "high",
