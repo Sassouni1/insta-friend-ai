@@ -182,7 +182,7 @@ serve(async (req) => {
   // Telnyx to accept and play those frames on the call leg.
   const answerRes = await telnyxCallControl(callControlId, "answer", {
     stream_url: streamUrl,
-    stream_track: practiceAnswer ? "both_tracks" : "inbound_track",
+    stream_track: "inbound_track",
     stream_codec: "PCMU",
     stream_bidirectional_mode: "rtp",
     stream_bidirectional_codec: "PCMU",

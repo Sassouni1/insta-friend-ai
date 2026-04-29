@@ -131,7 +131,10 @@ serve(async (req) => {
     from: fromRow.e164_number,
     connection_id: fromRow.telnyx_connection_id,
     stream_url: `${BRIDGE_WS_URL}?${params.toString()}`,
-    stream_track: "both_tracks",
+    // Match the production outbound path: only forward the callee audio into
+    // the agent. Streaming both tracks can feed the agent's own TTS back into
+    // the bridge and starve the real answerer audio during bot-to-bot tests.
+    stream_track: "inbound_track",
     stream_codec: "PCMU",
     stream_bidirectional_mode: "rtp",
     stream_bidirectional_codec: "PCMU",
