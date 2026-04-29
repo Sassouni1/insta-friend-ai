@@ -203,6 +203,44 @@ interface OpResult {
   permission_hint?: string;
 }
 
+async function summarizeAgentConfig(apiKey: string, agentId: string) {
+  const op = await elevenLabsOp(
+    "inspect_agent",
+    `https://api.elevenlabs.io/v1/convai/agents/${agentId}`,
+    {
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": "application/json",
+      },
+    },
+    "convai_read",
+  );
+
+  if (!op.ok) {
+    return { ok: false, status: op.status, error_text: op.error_text, permission_hint: op.permission_hint };
+  }
+
+  const cfg = op.data?.conversation_config || {};
+  const agent = cfg.agent || {};
+  const promptText = agent.prompt?.prompt || "";
+
+  return {
+    ok: true,
+    agent_id: op.data?.agent_id || agentId,
+    name: op.data?.name,
+    first_message: agent.first_message,
+    language: agent.language,
+    prompt_length: typeof promptText === "string" ? promptText.length : null,
+    prompt_starts_with: typeof promptText === "string" ? promptText.slice(0, 80) : null,
+    turn: cfg.turn || null,
+    tts: cfg.tts || null,
+    asr: cfg.asr || null,
+    conversation: cfg.conversation || null,
+    vad: cfg.vad || null,
+    platform_override_flags: op.data?.platform_settings?.overrides || null,
+  };
+}
+
 async function elevenLabsOp(
   stage: string,
   url: string,
@@ -410,6 +448,10 @@ serve(async (req) => {
       requestBody?.patch_agent_config === true ||
       requestUrl.searchParams.get("patch_agent_config") === "true" ||
       requestUrl.searchParams.get("patch_agent_config") === "1";
+    const inspectAgentConfig =
+      requestBody?.inspect_agent_config === true ||
+      requestUrl.searchParams.get("inspect_agent_config") === "true" ||
+      requestUrl.searchParams.get("inspect_agent_config") === "1";
 
     const { key: primaryKey, source: primarySource } = resolveApiKey();
     console.log(`Using key source: ${primarySource}`);
@@ -444,6 +486,10 @@ serve(async (req) => {
       );
     }
 
+    const inspectedAgentConfig = inspectAgentConfig
+      ? await summarizeAgentConfig(primaryKey, result.agent_id)
+      : undefined;
+
     return new Response(
       JSON.stringify({
         token: result.token,
@@ -451,6 +497,7 @@ serve(async (req) => {
         agent_id: result.agent_id,
         key_source: result.key_source,
         patched_agent_config: patchAgentConfig,
+        inspected_agent_config: inspectedAgentConfig,
       }),
       {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
