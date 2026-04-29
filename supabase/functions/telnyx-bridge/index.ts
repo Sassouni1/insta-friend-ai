@@ -395,25 +395,48 @@ Deno.serve(async (req) => {
       elConnecting = false;
       console.log(`[bridge ${conversationId}] EL open — requesting pcm_16000 both directions`);
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
+      const conversationConfigOverride: Record<string, unknown> = {
+        asr: { user_input_audio_format: "pcm_16000" },
+        tts: { agent_output_audio_format: "pcm_16000" },
+        conversation: {
+          client_events: [
+            "audio",
+            "interruption",
+            "agent_response",
+            "user_transcript",
+            "agent_response_correction",
+            "agent_tool_response",
+            "vad_score",
+            "ping",
+          ],
+        },
+      };
+
+      if (botKind === "chris") {
+        conversationConfigOverride.agent = {
+          prompt: { prompt: buildChrisPrompt(practiceScript) },
+          first_message: "Hey, this is Chris.",
+          language: "en",
+        };
+        conversationConfigOverride.turn = {
+          mode: "turn",
+          turn_timeout: 4,
+          turn_eagerness: "normal",
+        };
+        conversationConfigOverride.tts = {
+          ...(conversationConfigOverride.tts as Record<string, unknown>),
+          model_id: "eleven_flash_v2",
+          voice_id: Deno.env.get("PRACTICE_CHRIS_VOICE_ID")?.trim() || DEFAULT_CHRIS_VOICE_ID,
+          stability: 0.68,
+          similarity_boost: 0.75,
+          speed: 0.97,
+        };
+      }
+
       socket.send(
         JSON.stringify({
           type: "conversation_initiation_client_data",
-          conversation_config_override: {
-            asr: { user_input_audio_format: "pcm_16000" },
-            tts: { agent_output_audio_format: "pcm_16000" },
-            conversation: {
-              client_events: [
-                "audio",
-                "interruption",
-                "agent_response",
-                "user_transcript",
-                "agent_response_correction",
-                "agent_tool_response",
-                "vad_score",
-                "ping",
-              ],
-            },
-          },
+          conversation_config_override: conversationConfigOverride,
           dynamic_variables: {
             tenant_id: tenantId,
             conversation_id: conversationId,
