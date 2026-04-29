@@ -215,8 +215,20 @@ async function ensureAgentId(apiKey: string, name: string, conversationConfig?: 
 async function getOrFetchAgentId(apiKey: string, botKind: string, script: string): Promise<string | null> {
   if (botKind === "chris") {
     const envAgentId = Deno.env.get("PRACTICE_CHRIS_AGENT_ID")?.trim();
-    if (envAgentId) return envAgentId;
-    return ensureAgentId(apiKey, CHRIS_AGENT_NAME, buildChrisConversationConfig(script));
+    const conversationConfig = buildChrisConversationConfig(script);
+    if (envAgentId) {
+      const headers = { "xi-api-key": apiKey, "Content-Type": "application/json" };
+      const patched = await elevenLabsJson(`https://api.elevenlabs.io/v1/convai/agents/${envAgentId}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ conversation_config: conversationConfig }),
+      });
+      if (!patched.ok) {
+        console.warn(`[bridge] patch env ${CHRIS_AGENT_NAME} failed ${patched.status}: ${patched.text.slice(0, 300)}`);
+      }
+      return envAgentId;
+    }
+    return ensureAgentId(apiKey, CHRIS_AGENT_NAME, conversationConfig);
   }
 
   const envAgentId = Deno.env.get("ELEVENLABS_AGENT_ID")?.trim();
