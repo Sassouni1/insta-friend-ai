@@ -31,15 +31,16 @@ serve(async (req) => {
     global: { headers: { Authorization: authHeader } },
   });
   const token = authHeader.replace("Bearer ", "");
-  const { data: claims, error: claimsErr } = await userClient.auth.getClaims(token);
-  if (claimsErr || !claims?.claims?.sub) {
+  const { data: userData, error: userErr } = await userClient.auth.getUser(token);
+  const userId = userData?.user?.id;
+  if (userErr || !userId) {
     return jsonResponse({ error: "unauthorized" }, 401);
   }
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const { data: roleRow } = await admin
     .from("user_roles")
     .select("role")
-    .eq("user_id", claims.claims.sub)
+    .eq("user_id", userId)
     .eq("role", "admin")
     .maybeSingle();
   if (!roleRow) return jsonResponse({ error: "forbidden" }, 403);
