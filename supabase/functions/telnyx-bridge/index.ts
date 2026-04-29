@@ -420,7 +420,6 @@ Deno.serve(async (req) => {
   let calendarOfferMade = false;
   let bookingInFlight = false;
   let bookedAppointmentId: string | null = null;
-  let calendarContextSent = false;
   let bridgeClosed = false;
   let agentSpeakingUntil = 0;
   let lastForwardedSpeechAt = 0;
@@ -608,13 +607,6 @@ Deno.serve(async (req) => {
           console.log(
             `[bridge ${conversationId}] EL ready — negotiated in=${elUserInputAudioFormat || "unknown"} out=${elAgentOutputAudioFormat || "unknown"}; flushing ${pendingTelnyxAudio.length} buffered frames`,
           );
-          if (botKind === "sam" && !calendarContextSent && socket.readyState === WebSocket.OPEN) {
-            calendarContextSent = true;
-            socket.send(JSON.stringify({
-              type: "contextual_update",
-              text: buildAvailabilityContext(calendar.slots, calendar.timezone),
-            }));
-          }
           for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
           pendingTelnyxAudio.length = 0;
           break;
@@ -722,10 +714,19 @@ Deno.serve(async (req) => {
             });
             if (botKind === "sam" && calendar.slots.length > 0) {
               const normalized = text.toLowerCase();
+              const mentionsLiveSlot = calendar.slots.some((slot) => {
+                const spoken = slot.spoken.toLowerCase();
+                const weekday = spoken.split(",")[0];
+                return normalized.includes(weekday) || normalized.includes("option 1") || normalized.includes("option one");
+              });
               if (
-                normalized.includes("which") &&
-                (normalized.includes("works better") || normalized.includes("work better")) &&
-                calendar.slots.some((slot) => normalized.includes(slot.spoken.split(",")[0].toLowerCase()))
+                mentionsLiveSlot &&
+                (
+                  normalized.includes("which") ||
+                  normalized.includes("work") ||
+                  normalized.includes("available") ||
+                  normalized.includes("option")
+                )
               ) {
                 calendarOfferMade = true;
                 console.log(`[bridge ${conversationId}] calendar offer detected`);
