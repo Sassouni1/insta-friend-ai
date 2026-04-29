@@ -1,79 +1,42 @@
-## Goal
+# Apply practice-direction migration + first live test
 
-Replace the GHL workflow with a native marketplace webhook. New `ghl-contact-webhook` edge function receives `ContactCreate` events directly from GHL, looks up the right tenant (sub-account), checks if the contact already has any appointment, and dials them with Sam — passing the **sub-account's business name** and the **contact's name** so Sam greets them properly.
+## What this does
 
-## How the three requirements map
+1. **Run the migration** to allow `conversations.direction = 'practice'`:
+   ```sql
+   ALTER TABLE public.conversations
+     DROP CONSTRAINT IF EXISTS conversations_direction_check;
+   ALTER TABLE public.conversations
+     ADD CONSTRAINT conversations_direction_check
+     CHECK (direction in ('web','inbound','outbound','practice'));
+   ```
 
-1. **Per sub-account** → Webhook payload carries `locationId`. We look up the tenant row by `ghl_location_id`. Each sub-account is its own tenant, with its own phone number, calendar, and GHL token. Already how the schema works.
-2. **Calls users in that sub-account** → The dial uses `phone_numbers` filtered by that tenant's `tenant_id` (caller-ID = the sub-account's number). Lead phone comes from the contact payload.
-3. **Says sub-account name + contact name** → We pass `company` (tenant name) and `name` (contact name) as query params on the bridge WebSocket URL — the bridge already forwards these into Sam's prompt context. (Already wired up in `lead-opt-in-webhook` via `params.set("name", ...)` and `params.set("company", ...)` — we'll mirror that exactly.)
+2. **Verify** the new constraint is live by querying `pg_constraint`.
 
-## Files to add / change
+3. **Smoke-test** that an insert with `direction='practice'` is now accepted (insert a throwaway row, confirm it lands, then delete it via a follow-up migration if needed — or just leave it; it's harmless).
 
-### NEW: `supabase/functions/ghl-contact-webhook/index.ts`
+4. **Hand off for the live test**: tell you to open `/admin/practice` and click **Start Chris calling Sam**.
 
-Receives the GHL marketplace webhook. Flow:
+5. **Tail logs live** from both edge functions while the call runs:
+   - `practice-bot-call` — confirms the outbound dial to Sam's DID was issued
+   - `telnyx-bridge` — confirms the Chris leg (`bot=chris`) connected, audio frames flowed, and ElevenLabs negotiated formats correctly
 
-1. Validate `?secret=<GHL_WEBHOOK_SECRET>` query param.
-2. Parse body. Get `type`, `locationId`, and the contact fields (GHL marketplace events typically nest contact fields at the root, e.g. `{ type, locationId, id, firstName, lastName, phone, email, ... }` for `ContactCreate`).
-3. If `type !== "ContactCreate"` → return 200 `{ ignored: type }`.
-4. Look up tenant by `ghl_location_id = locationId`. If missing/inactive → 200 `{ ignored }`.
-5. Extract phone. If missing, fetch the contact via GHL API as a fallback. Still missing → 200.
-6. **Booked-check**: GET `/contacts/{contactId}/appointments` with the tenant's fresh token. If any appointment row exists (any status, any calendar) → 200 `{ skipped: "already booked" }`.
-7. **Dedupe**: skip if a `scheduled_calls` row exists for same `tenant_id + lead_phone` in the last 24h (stops repeated webhook fires).
-8. Insert `scheduled_calls` row with `fire_at = now + 120s`, `lead_name`, `lead_email`, `ghl_contact_id`.
-9. Schedule background dial via `EdgeRuntime.waitUntil` — uses shared dialer module that passes `name` (contact) + `company` (tenant.name) + `tz` to the bridge so Sam introduces himself properly.
+## What I'll be watching for in logs
 
-### NEW: `supabase/functions/_shared/dialer.ts`
+- `practice-bot-call`: 200 response, Telnyx `call_control_id` returned, no auth errors
+- `telnyx-bridge` Chris leg: `START stream_id=…`, `EL ready`, `FIRST user_audio_chunk sent to EL`, `FIRST agent audio sent to Telnyx`, `vad_score`
+- `telnyx-bridge` Sam leg: same sequence on the inbound side
+- Any `SIP 487 / timeout` or EL close codes get flagged immediately
 
-Extract the `placeDial` + retry + `wasAnswered` + `fireCall` logic out of `lead-opt-in-webhook/index.ts` so both webhooks share it. The contact name and tenant name flow through the bridge URL params exactly as today — no behavior change for inbound or for the existing webhook.
+## Already done (from previous turn)
 
-### EDIT: `supabase/functions/_shared/ghl.ts`
+- ✅ `practice-bot-call` deployed
+- ✅ `telnyx-bridge` redeployed with `bot=chris` branch (verified line 131, 191, 249)
+- ✅ `supabase/config.toml` has `[functions.practice-bot-call] verify_jwt = false`
+- ✅ Secrets present: `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY`, `ELEVENLABS_API_KEY_CUSTOM`
 
-Add three things:
+## Only blocker
 
-- `getFreshGhlToken(supabase, tenantId)` — reads tenant row, refreshes via `POST /oauth/token` with `grant_type=refresh_token` if `ghl_token_expires_at` is within 5 min, persists the new token + expiry, returns the access token. Uses `GHL_CLIENT_ID` / `GHL_CLIENT_SECRET` (already configured).
-- `GhlClient.getContact(contactId)` — `GET /contacts/{contactId}`.
-- `GhlClient.getContactAppointments(contactId)` — `GET /contacts/{contactId}/appointments`.
+The migration file was pushed via GitHub but Lovable's auto-sync only deploys edge functions, not migrations from the repo. I need build-mode access to run the SQL — that's it.
 
-### EDIT: `supabase/functions/lead-opt-in-webhook/index.ts`
-
-Refactor to import `placeDial` / `fireCall` from the new `_shared/dialer.ts`. No external behavior change. Kept as a fallback path.
-
-### EDIT: `supabase/config.toml`
-
-Append:
-```toml
-[functions.ghl-contact-webhook]
-verify_jwt = false
-```
-
-## What you'll do in GHL (one time, in your marketplace app config)
-
-After deploy, paste this URL into your GHL marketplace app's webhook settings:
-
-```
-https://quezinwuuxzyqsntzicm.supabase.co/functions/v1/ghl-contact-webhook?secret=<GHL_WEBHOOK_SECRET>
-```
-
-Subscribed events: `ContactCreate` (you can leave `ContactUpdate` subscribed — we just ignore it).
-
-Once installed on a sub-account, every new contact in that sub-account flows through this URL automatically. No per-sub-account workflow needed.
-
-## Secret needed
-
-I'll request `GHL_WEBHOOK_SECRET` (any random string of your choice, e.g. a UUID). This locks the webhook URL so randoms can't POST to it.
-
-## Sam's greeting
-
-Already handled by the bridge — when the call connects, Sam gets `company=<tenant.name>` and `name=<contact firstName>` injected into his system prompt context. Example greeting:
-
-> "Hey {name}, this is Sam over at {company} — saw you just opted in, figured I'd give you a quick ring."
-
-If you want me to also tighten up the exact greeting line in the bridge prompt, say the word and I'll adjust it in the same pass.
-
-## Risks
-
-- **GHL payload shape**: marketplace `ContactCreate` events sometimes flatten fields and sometimes nest under `contact`. Function will check both shapes (`body.phone || body.contact?.phone`, etc.) — same defensive parsing as the existing webhook.
-- **Refresh token revoked**: if a sub-account uninstalls the app, refresh fails. We log to `scheduled_calls.last_error`, mark `failed`, and move on. No crash, no retry storm.
-- **Contact created without phone** (e.g. email-only opt-in): we return 200 with `ignored: no phone`. No dial attempted.
+Approve this and I'll run the migration, verify, then green-light you to click the button.
