@@ -54,6 +54,34 @@ Chris script:
 ${script}`;
 }
 
+function buildPracticeSamPrompt(companyName: string): string {
+  const company = companyName || "Infinite Hair";
+  return `You are Sam, a concise sales appointment setter for ${company}.
+
+You are on a live practice call with Chris, a realistic lead asking about hair systems.
+Your goal is to qualify briefly, check real calendar availability with ghl_calendar_tool, offer clear options, confirm timezone/contact details, and book the appointment.
+
+Rules:
+- Do not repeat your opener after Chris gives his name or says why he is calling.
+- Keep each turn brief and natural.
+- Ask one question at a time.
+- If Chris says his name, acknowledge it and continue the conversation.
+- If Chris says he is interested in hair systems or thinning hair, ask one short qualifying question, then move toward booking.
+- Before offering times, call ghl_calendar_tool with {"action":"availability","days_ahead":7}.
+- Offer two available times using the spoken labels returned by the tool.
+- If Chris chooses a time, confirm timezone. If he says Eastern is fine, use the selected slot exactly as returned.
+- Ask for or use his name, phone, and email before booking. If already known, do not keep asking.
+- To book, call ghl_calendar_tool with action "book", the selected slot_iso, caller_name, caller_phone, and caller_email.
+- After the tool returns ok, clearly confirm the appointment time and end politely.
+
+Known practice lead details if Chris provides or confirms them:
+- Name: Chris
+- Email: chris.bot.practice@example.com
+- Phone: use the caller phone from the call context.
+- Preferred timezone: Eastern
+- Preference: afternoons are better.`;
+}
+
 function isPracticeBookingConfirmation(text: string): boolean {
   const normalized = text.toLowerCase();
   return (
@@ -262,6 +290,8 @@ Deno.serve(async (req) => {
     : null;
   let lastRelayedTranscriptAt = new Date(Date.now() - 60_000).toISOString();
   let lastRelayedText = "";
+  let lastAgentResponseText = "";
+  let lastAgentResponseAt = 0;
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
   let inboundSpeechFrameCount = 0;
@@ -476,7 +506,7 @@ Deno.serve(async (req) => {
       if (botKind === "chris") {
         conversationConfigOverride.agent = {
           prompt: { prompt: buildChrisPrompt(practiceScript) },
-          first_message: "Hey, this is Chris.",
+          first_message: "Hey, this is Chris. I was calling about hair systems.",
           language: "en",
         };
         conversationConfigOverride.turn = {
@@ -491,6 +521,17 @@ Deno.serve(async (req) => {
           stability: 0.68,
           similarity_boost: 0.75,
           speed: 0.97,
+        };
+      } else if (metadata.practice_mode === "sam_to_chris") {
+        conversationConfigOverride.agent = {
+          prompt: { prompt: buildPracticeSamPrompt(companyName) },
+          first_message: `Hey, this is Sam from ${companyName || "Infinite Hair"}. Who do I have the pleasure of speaking with?`,
+          language: "en",
+        };
+        conversationConfigOverride.turn = {
+          mode: "turn",
+          turn_timeout: 4,
+          turn_eagerness: "normal",
         };
       }
 
@@ -588,12 +629,17 @@ Deno.serve(async (req) => {
         case "agent_response": {
           const text = msg.agent_response_event?.agent_response;
           if (text) {
+            const normalizedText = text.trim();
+            const isDuplicate = normalizedText === lastAgentResponseText && Date.now() - lastAgentResponseAt < 10_000;
+            if (isDuplicate) break;
+            lastAgentResponseText = normalizedText;
+            lastAgentResponseAt = Date.now();
             await supabase.from("transcript_entries").insert({
               conversation_id: conversationId,
               role: "agent",
-              text,
+              text: normalizedText,
             });
-            if (botKind === "chris" && isPracticeGoodbye(text)) {
+            if (botKind === "chris" && isPracticeGoodbye(normalizedText)) {
               schedulePracticeHangup("practice caller ended");
             }
           }
