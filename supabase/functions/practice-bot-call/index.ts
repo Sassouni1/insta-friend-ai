@@ -28,14 +28,15 @@ serve(async (req) => {
   const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: authHeader } },
   });
-  const { data: claims, error: claimsErr } = await userClient.auth.getClaims(token);
-  if (claimsErr || !claims?.claims?.sub) return jsonResponse({ error: "unauthorized" }, 401);
+  const { data: userData, error: userErr } = await userClient.auth.getUser(token);
+  if (userErr || !userData?.user?.id) return jsonResponse({ error: "unauthorized" }, 401);
+  const userId = userData.user.id;
 
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const { data: roleRow } = await admin
     .from("user_roles")
     .select("role")
-    .eq("user_id", claims.claims.sub)
+    .eq("user_id", userId)
     .eq("role", "admin")
     .maybeSingle();
   if (!roleRow) return jsonResponse({ error: "forbidden" }, 403);
