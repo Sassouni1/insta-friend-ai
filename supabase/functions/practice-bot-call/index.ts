@@ -65,8 +65,23 @@ serve(async (req) => {
     if (targetErr || !targetRow?.active) return jsonResponse({ error: "target inbound number not found or inactive" }, 400);
     targetNumber = targetRow.e164_number;
     targetTenantId = targetRow.tenant_id;
+  } else if (targetNumber) {
+    const { data: targetRow, error: targetErr } = await admin
+      .from("phone_numbers")
+      .select("e164_number, tenant_id, active")
+      .eq("e164_number", targetNumber)
+      .maybeSingle();
+    if (targetErr || !targetRow?.active) {
+      return jsonResponse({
+        error: "manual target number must be active on the Phone numbers page so telnyx-inbound can route it to Sam",
+      }, 400);
+    }
+    targetTenantId = targetRow.tenant_id;
   }
   if (!targetNumber.startsWith("+")) return jsonResponse({ error: "target number must be E.164, like +14155550100" }, 400);
+  if (targetNumber === fromRow.e164_number) {
+    return jsonResponse({ error: "caller ID and target inbound number must be different for a practice bot-to-bot call" }, 400);
+  }
 
   const { data: tenantRow } = await admin
     .from("tenants")

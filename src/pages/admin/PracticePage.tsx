@@ -4,6 +4,7 @@ import { Bot, PhoneCall } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -43,6 +44,7 @@ export default function PracticePage() {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [fromNumberId, setFromNumberId] = useState("");
   const [targetNumberId, setTargetNumberId] = useState("");
+  const [manualTargetNumber, setManualTargetNumber] = useState("");
   const [script, setScript] = useState(DEFAULT_CHRIS_SCRIPT);
   const [running, setRunning] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -63,10 +65,28 @@ export default function PracticePage() {
     () => numbers.filter((n) => n.telnyx_connection_id),
     [numbers],
   );
+  const targetNumbers = useMemo(
+    () => numbers.filter((n) => n.id !== fromNumberId),
+    [numbers, fromNumberId],
+  );
+  const normalizedManualTarget = manualTargetNumber.trim();
+  const canStart = Boolean(
+    fromNumberId &&
+    script.trim() &&
+    (targetNumberId || normalizedManualTarget.startsWith("+")),
+  );
 
   const tenantName = (id: string) => tenants.find((t) => t.id === id)?.name || "Unknown tenant";
 
   const startPracticeCall = async () => {
+    if (targetNumberId) {
+      const from = numbers.find((n) => n.id === fromNumberId);
+      const target = numbers.find((n) => n.id === targetNumberId);
+      if (from?.e164_number && target?.e164_number && from.e164_number === target.e164_number) {
+        toast({ variant: "destructive", title: "Choose different numbers", description: "Chris and Sam need different phone numbers for a clean bot-to-bot call." });
+        return;
+      }
+    }
     setRunning(true);
     setConversationId(null);
     setMessage(null);
@@ -74,7 +94,8 @@ export default function PracticePage() {
       const { data, error } = await supabase.functions.invoke("practice-bot-call", {
         body: {
           from_number_id: fromNumberId,
-          target_number_id: targetNumberId,
+          target_number_id: targetNumberId || undefined,
+          target_number: targetNumberId ? undefined : normalizedManualTarget,
           chris_script: script,
         },
       });
@@ -131,17 +152,41 @@ export default function PracticePage() {
 
             <div>
               <Label>Bot 1 inbound number</Label>
-              <Select value={targetNumberId} onValueChange={setTargetNumberId}>
+              <Select
+                value={targetNumberId}
+                onValueChange={(value) => {
+                  setTargetNumberId(value);
+                  setManualTargetNumber("");
+                }}
+              >
                 <SelectTrigger><SelectValue placeholder="Choose Sam inbound number" /></SelectTrigger>
                 <SelectContent>
-                  {numbers.map((n) => (
+                  {targetNumbers.map((n) => (
                     <SelectItem key={n.id} value={n.id}>
                       {n.e164_number} · {tenantName(n.tenant_id)}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {fromNumberId && targetNumbers.length === 0 && (
+                <p className="text-xs text-muted-foreground mt-1">No second saved number is active. Paste another Sam inbound number below.</p>
+              )}
             </div>
+          </div>
+
+          <div>
+            <Label>Manual Sam inbound number</Label>
+            <Input
+              placeholder="+14155550100"
+              value={manualTargetNumber}
+              onChange={(e) => {
+                setManualTargetNumber(e.target.value);
+                setTargetNumberId("");
+              }}
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              The pasted number must already be assigned to the Telnyx inbound webhook and saved on the Phone numbers page for Sam to answer.
+            </p>
           </div>
 
           <div>
@@ -155,7 +200,7 @@ export default function PracticePage() {
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">
-            <Button onClick={startPracticeCall} disabled={running || !fromNumberId || !targetNumberId || !script.trim()}>
+            <Button onClick={startPracticeCall} disabled={running || !canStart}>
               <PhoneCall className="w-4 h-4 mr-2" />
               {running ? "Starting..." : "Start Chris calling Sam"}
             </Button>
