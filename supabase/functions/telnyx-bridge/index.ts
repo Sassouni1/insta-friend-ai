@@ -256,6 +256,12 @@ Deno.serve(async (req) => {
   let firstVadLogged = false;
   let vadWarnTimer: number | null = null;
   let practiceHangupScheduled = false;
+  let practiceRelayTimer: number | null = null;
+  let practicePeerConversationId: string | null = typeof metadata.practice_parent_conversation_id === "string"
+    ? metadata.practice_parent_conversation_id
+    : null;
+  let lastRelayedTranscriptAt = new Date(Date.now() - 60_000).toISOString();
+  let lastRelayedText = "";
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
   let inboundSpeechFrameCount = 0;
@@ -284,6 +290,7 @@ Deno.serve(async (req) => {
     bridgeClosed = true;
     console.log(`[bridge ${conversationId}] closing: ${reason}`);
     clearTimeout(startTimer);
+    if (practiceRelayTimer) clearInterval(practiceRelayTimer);
     try {
       if (telnyxSocket.readyState < 2) telnyxSocket.close();
     } catch {}
@@ -300,6 +307,60 @@ Deno.serve(async (req) => {
       })
       .eq("id", conversationId)
       .then(() => {});
+  };
+
+  const resolvePracticePeerConversationId = async (): Promise<string | null> => {
+    if (practicePeerConversationId) return practicePeerConversationId;
+    if (botKind !== "sam" || metadata.practice_mode !== "sam_to_chris") return null;
+
+    const { data } = await supabase
+      .from("conversations")
+      .select("id")
+      .eq("direction", "practice")
+      .eq("telnyx_event_payload->>practice_parent_conversation_id", conversationId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    practicePeerConversationId = data?.id || null;
+    return practicePeerConversationId;
+  };
+
+  const startPracticeTranscriptRelay = () => {
+    if (practiceRelayTimer || metadata.practice_mode !== "sam_to_chris") return;
+
+    practiceRelayTimer = setInterval(async () => {
+      if (bridgeClosed || !elReady || !elSocket || elSocket.readyState !== WebSocket.OPEN) return;
+
+      const peerId = await resolvePracticePeerConversationId();
+      if (!peerId) return;
+
+      const { data, error } = await supabase
+        .from("transcript_entries")
+        .select("id, text, created_at")
+        .eq("conversation_id", peerId)
+        .eq("role", "agent")
+        .gt("created_at", lastRelayedTranscriptAt)
+        .order("created_at", { ascending: true })
+        .limit(10);
+
+      if (error || !data?.length) return;
+
+      for (const entry of data) {
+        lastRelayedTranscriptAt = entry.created_at;
+        const text = (entry.text || "").trim();
+        if (!text || text === lastRelayedText) continue;
+        lastRelayedText = text;
+
+        console.log(`[bridge ${conversationId}] relaying peer agent text as user_message: ${text.slice(0, 160)}`);
+        elSocket.send(JSON.stringify({ type: "user_message", text }));
+        await supabase.from("transcript_entries").insert({
+          conversation_id: conversationId,
+          role: "user",
+          text,
+        });
+      }
+    }, 1000) as unknown as number;
   };
 
   const schedulePracticeHangup = (reason: string) => {
@@ -471,6 +532,7 @@ Deno.serve(async (req) => {
           );
           for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
           pendingTelnyxAudio.length = 0;
+          startPracticeTranscriptRelay();
           break;
         }
 
