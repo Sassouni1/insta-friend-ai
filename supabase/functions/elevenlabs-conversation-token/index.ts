@@ -180,6 +180,15 @@ const SAM_CONVERSATION_CONFIG = {
     turn_timeout: 4,
     turn_eagerness: "eager",
   },
+  conversation: {
+    client_events: [
+      "audio",
+      "interruption",
+      "agent_response",
+      "user_transcript",
+      "agent_response_correction",
+    ],
+  },
   asr: {
     quality: "high",
     keywords: ["yes", "no", "yeah", "hair", "hair system", "transplant", "medication", "Pacific", "Central", "Eastern"],
