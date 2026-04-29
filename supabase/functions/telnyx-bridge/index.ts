@@ -64,6 +64,16 @@ function isPracticeBookingConfirmation(text: string): boolean {
   );
 }
 
+function isPracticeGoodbye(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    /\bgoodbye\b/.test(normalized) ||
+    /\btake care\b/.test(normalized) ||
+    /\bi'?m all set\b/.test(normalized) ||
+    /\bwe'?re all set\b/.test(normalized)
+  );
+}
+
 function buildChrisConversationConfig(script: string) {
   return {
     agent: {
@@ -498,6 +508,9 @@ Deno.serve(async (req) => {
               role: "agent",
               text,
             });
+            if (botKind === "chris" && isPracticeGoodbye(text)) {
+              schedulePracticeHangup("practice caller ended");
+            }
           }
           break;
         }
