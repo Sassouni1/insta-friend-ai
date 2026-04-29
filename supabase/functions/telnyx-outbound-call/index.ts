@@ -19,82 +19,107 @@ const BodySchema = z.object({
 });
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
-  if (req.method !== "POST") return jsonResponse({ error: "method not allowed" }, 405);
+  try {
+    if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+    if (req.method !== "POST") return jsonResponse({ error: "method not allowed" }, 405);
 
-  // Admin auth
-  const authHeader = req.headers.get("Authorization");
-  if (!authHeader?.startsWith("Bearer ")) {
-    return jsonResponse({ error: "unauthorized" }, 401);
-  }
-  const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: authHeader } },
-  });
-  const token = authHeader.replace("Bearer ", "");
-  const { data: userData, error: userErr } = await userClient.auth.getUser(token);
-  const userId = userData?.user?.id;
-  if (userErr || !userId) {
-    return jsonResponse({ error: "unauthorized" }, 401);
-  }
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-  const { data: roleRow } = await admin
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", userId)
-    .eq("role", "admin")
-    .maybeSingle();
-  if (!roleRow) return jsonResponse({ error: "forbidden" }, 403);
+    // Admin auth
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return jsonResponse({ error: "unauthorized" }, 401);
+    }
+    const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const token = authHeader.replace("Bearer ", "");
+    const { data: userData, error: userErr } = await userClient.auth.getUser(token);
+    const userId = userData?.user?.id;
+    if (userErr || !userId) {
+      return jsonResponse({ error: "unauthorized" }, 401);
+    }
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const { data: roleRow } = await admin
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", userId)
+      .eq("role", "admin")
+      .maybeSingle();
+    if (!roleRow) return jsonResponse({ error: "forbidden" }, 403);
 
-  const parsed = BodySchema.safeParse(await req.json().catch(() => ({})));
-  if (!parsed.success) {
-    return jsonResponse({ error: parsed.error.flatten().fieldErrors }, 400);
-  }
-  const { tenant_id, to_number, from_number, connection_id, caller_name } = parsed.data;
+    const parsed = BodySchema.safeParse(await req.json().catch(() => ({})));
+    if (!parsed.success) {
+      return jsonResponse({ error: parsed.error.flatten().fieldErrors }, 400);
+    }
+    const { tenant_id, to_number, from_number, connection_id, caller_name } = parsed.data;
 
-  // Pre-create conversation row so we have an id for the stream URL
-  const { data: convRow, error: convErr } = await admin
-    .from("conversations")
-    .insert({
-      tenant_id,
-      caller_phone: to_number,
-      direction: "outbound",
-    })
-    .select("id")
-    .single();
-
-  if (convErr || !convRow) {
-    return jsonResponse({ error: "failed to create conversation" }, 500);
-  }
-
-  const streamUrl =
-    `${BRIDGE_WS_URL}?conv=${convRow.id}&tenant=${tenant_id}&caller=${encodeURIComponent(to_number)}` +
-    (caller_name ? `&name=${encodeURIComponent(caller_name)}` : "");
-
-  const dialRes = await telnyxDial({
-    to: to_number,
-    from: from_number,
-    connection_id,
-    stream_url: streamUrl,
-    stream_track: "inbound_track",
-    stream_codec: "PCMU",
-    stream_bidirectional_mode: "rtp",
-    stream_bidirectional_codec: "PCMU",
-  });
-
-  if (!dialRes.ok) {
-    const txt = await dialRes.text();
-    console.error(`[telnyx-outbound] dial failed [${dialRes.status}]: ${txt}`);
-    return jsonResponse({ error: `dial failed: ${txt}` }, 502);
-  }
-
-  const dialData = await dialRes.json();
-  const callControlId = dialData?.data?.call_control_id;
-  if (callControlId) {
-    await admin
+    // Pre-create conversation row so we have an id for the stream URL
+    const { data: convRow, error: convErr } = await admin
       .from("conversations")
-      .update({ telnyx_call_control_id: callControlId })
-      .eq("id", convRow.id);
-  }
+      .insert({
+        tenant_id,
+        caller_phone: to_number,
+        direction: "outbound",
+      })
+      .select("id")
+      .single();
 
-  return jsonResponse({ ok: true, conversation_id: convRow.id, call_control_id: callControlId });
+    if (convErr || !convRow) {
+      return jsonResponse({ error: "failed to create conversation", details: convErr?.message }, 500);
+    }
+
+    const { data: tenantRow } = await admin
+      .from("tenants")
+      .select("name, timezone")
+      .eq("id", tenant_id)
+      .maybeSingle();
+
+    const params = new URLSearchParams({
+      conv: convRow.id,
+      tenant: tenant_id,
+      caller: to_number,
+    });
+    if (caller_name) params.set("name", caller_name);
+    if (tenantRow?.name) params.set("company", tenantRow.name);
+    if (tenantRow?.timezone) params.set("tz", tenantRow.timezone);
+
+    const streamUrl = `${BRIDGE_WS_URL}?${params.toString()}`;
+
+    const dialRes = await telnyxDial({
+      to: to_number,
+      from: from_number,
+      connection_id,
+      stream_url: streamUrl,
+      stream_track: "inbound_track",
+      stream_codec: "PCMU",
+      stream_bidirectional_mode: "rtp",
+      stream_bidirectional_codec: "PCMU",
+    });
+
+    if (!dialRes.ok) {
+      const txt = await dialRes.text();
+      console.error(`[telnyx-outbound] dial failed [${dialRes.status}]: ${txt}`);
+      return jsonResponse({ error: `dial failed: ${txt}` }, 502);
+    }
+
+    const dialData = await dialRes.json();
+    const dialPayload = dialData?.data ?? {};
+    const callControlId = dialPayload?.call_control_id ?? null;
+    if (callControlId) {
+      await admin
+        .from("conversations")
+        .update({
+          telnyx_call_control_id: callControlId,
+          telnyx_call_session_id: dialPayload?.call_session_id ?? null,
+          telnyx_call_leg_id: dialPayload?.call_leg_id ?? null,
+          telnyx_call_status: "dial_request_accepted",
+          telnyx_event_payload: dialPayload,
+        })
+        .eq("id", convRow.id);
+    }
+
+    return jsonResponse({ ok: true, conversation_id: convRow.id, call_control_id: callControlId });
+  } catch (err: any) {
+    console.error("[telnyx-outbound] unhandled", err);
+    return jsonResponse({ error: err?.message || String(err) }, 500);
+  }
 });
