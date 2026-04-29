@@ -420,6 +420,7 @@ Deno.serve(async (req) => {
   let calendarOfferMade = false;
   let bookingInFlight = false;
   let bookedAppointmentId: string | null = null;
+  let calendarContextSent = false;
   let bridgeClosed = false;
   let agentSpeakingUntil = 0;
   let lastForwardedSpeechAt = 0;
@@ -587,12 +588,6 @@ Deno.serve(async (req) => {
           },
         }),
       );
-      if (botKind === "sam") {
-        socket.send(JSON.stringify({
-          type: "contextual_update",
-          text: buildAvailabilityContext(calendar.slots, calendar.timezone),
-        }));
-      }
     };
 
     socket.onmessage = async (ev) => {
@@ -613,6 +608,13 @@ Deno.serve(async (req) => {
           console.log(
             `[bridge ${conversationId}] EL ready — negotiated in=${elUserInputAudioFormat || "unknown"} out=${elAgentOutputAudioFormat || "unknown"}; flushing ${pendingTelnyxAudio.length} buffered frames`,
           );
+          if (botKind === "sam" && !calendarContextSent && socket.readyState === WebSocket.OPEN) {
+            calendarContextSent = true;
+            socket.send(JSON.stringify({
+              type: "contextual_update",
+              text: buildAvailabilityContext(calendar.slots, calendar.timezone),
+            }));
+          }
           for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
           pendingTelnyxAudio.length = 0;
           break;
