@@ -12,6 +12,9 @@ verify_jwt = false
 [functions.ghl-book-appointment]
 verify_jwt = false
 
+[functions.ghl-calendar-tool]
+verify_jwt = false
+
 [functions.crm-oauth-callback]
 verify_jwt = false
 
