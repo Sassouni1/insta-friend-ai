@@ -19,7 +19,7 @@ const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
 
 const DEFAULT_CHRIS_SCRIPT = `You are Chris, a realistic practice lead calling about hair systems.
 
-You are answering Sam, an appointment setter. Answer naturally when the call connects.
+You are calling Sam, an appointment setter. Wait for Sam to speak first.
 Keep answers short, natural, and specific. Do not mention that this is a test.
 If Sam asks who you are, say your name is Chris.
 If Sam asks why you are calling, say you were looking into hair systems.
@@ -41,7 +41,7 @@ You are speaking to Sam, who is the sales appointment setter.
 Your job is to behave like a real lead and respond to Sam's questions.
 
 Rules:
-- Start naturally when the call connects by saying who you are, then let Sam lead.
+- Wait for Sam to speak first.
 - Do not reveal that you are an AI, bot, or test caller.
 - Keep responses natural and brief.
 - Answer one question at a time.
@@ -78,7 +78,7 @@ function buildChrisConversationConfig(script: string) {
   return {
     agent: {
       prompt: { prompt: buildChrisPrompt(script) },
-      first_message: "Hey, this is Chris.",
+      first_message: "",
       language: "en",
     },
     turn: {
@@ -256,14 +256,6 @@ Deno.serve(async (req) => {
   let firstVadLogged = false;
   let vadWarnTimer: number | null = null;
   let practiceHangupScheduled = false;
-  let practiceRelayTimer: number | null = null;
-  let practicePeerConversationId: string | null = typeof metadata.practice_parent_conversation_id === "string"
-    ? metadata.practice_parent_conversation_id
-    : null;
-  let lastRelayedTranscriptAt = new Date(Date.now() - 60_000).toISOString();
-  let lastRelayedText = "";
-  let lastAgentResponseText = "";
-  let lastAgentResponseAt = 0;
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
   let inboundSpeechFrameCount = 0;
@@ -292,7 +284,6 @@ Deno.serve(async (req) => {
     bridgeClosed = true;
     console.log(`[bridge ${conversationId}] closing: ${reason}`);
     clearTimeout(startTimer);
-    if (practiceRelayTimer) clearInterval(practiceRelayTimer);
     try {
       if (telnyxSocket.readyState < 2) telnyxSocket.close();
     } catch {}
@@ -309,63 +300,6 @@ Deno.serve(async (req) => {
       })
       .eq("id", conversationId)
       .then(() => {});
-  };
-
-  const resolvePracticePeerConversationId = async (): Promise<string | null> => {
-    if (practicePeerConversationId) return practicePeerConversationId;
-    if (botKind !== "sam" || metadata.practice_mode !== "sam_to_chris") return null;
-
-    const { data } = await supabase
-      .from("conversations")
-      .select("id")
-      .eq("direction", "practice")
-      .eq("telnyx_event_payload->>practice_parent_conversation_id", conversationId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    practicePeerConversationId = data?.id || null;
-    return practicePeerConversationId;
-  };
-
-  const startPracticeTranscriptRelay = () => {
-    if (practiceRelayTimer || metadata.practice_mode !== "sam_to_chris") return;
-
-    practiceRelayTimer = setInterval(async () => {
-      if (bridgeClosed || !elReady || !elSocket || elSocket.readyState !== WebSocket.OPEN) return;
-
-      const peerId = await resolvePracticePeerConversationId();
-      if (!peerId) return;
-
-      const { data, error } = await supabase
-        .from("transcript_entries")
-        .select("id, text, created_at")
-        .eq("conversation_id", peerId)
-        .eq("role", "agent")
-        .gt("created_at", lastRelayedTranscriptAt)
-        .order("created_at", { ascending: true })
-        .limit(10);
-
-      if (error || !data?.length) return;
-
-      for (const entry of data) {
-        lastRelayedTranscriptAt = entry.created_at;
-        let text = (entry.text || "").trim();
-        if (!text || text === lastRelayedText) continue;
-        if (botKind === "sam" && /^hey,? this is chris/i.test(text)) {
-          text = "My name is Chris. I'm interested in a hair system consultation.";
-        }
-        lastRelayedText = text;
-
-        console.log(`[bridge ${conversationId}] relaying peer agent text as user_message: ${text.slice(0, 160)}`);
-        elSocket.send(JSON.stringify({ type: "user_message", text }));
-        await supabase.from("transcript_entries").insert({
-          conversation_id: conversationId,
-          role: "user",
-          text,
-        });
-      }
-    }, 1000) as unknown as number;
   };
 
   const schedulePracticeHangup = (reason: string) => {
@@ -461,48 +395,25 @@ Deno.serve(async (req) => {
       elConnecting = false;
       console.log(`[bridge ${conversationId}] EL open — requesting pcm_16000 both directions`);
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
-      const conversationConfigOverride: Record<string, unknown> = {
-        asr: { user_input_audio_format: "pcm_16000" },
-        tts: { agent_output_audio_format: "pcm_16000" },
-        conversation: {
-          client_events: [
-            "audio",
-            "interruption",
-            "agent_response",
-            "user_transcript",
-            "agent_response_correction",
-            "agent_tool_response",
-            "vad_score",
-            "ping",
-          ],
-        },
-      };
-
-      if (botKind === "chris") {
-        conversationConfigOverride.agent = {
-          prompt: { prompt: buildChrisPrompt(practiceScript) },
-          first_message: "Hey, this is Chris.",
-          language: "en",
-        };
-        conversationConfigOverride.turn = {
-          mode: "turn",
-          turn_timeout: 4,
-          turn_eagerness: "normal",
-        };
-        conversationConfigOverride.tts = {
-          ...(conversationConfigOverride.tts as Record<string, unknown>),
-          model_id: "eleven_flash_v2",
-          voice_id: Deno.env.get("PRACTICE_CHRIS_VOICE_ID")?.trim() || DEFAULT_CHRIS_VOICE_ID,
-          stability: 0.68,
-          similarity_boost: 0.75,
-          speed: 0.97,
-        };
-      }
-
       socket.send(
         JSON.stringify({
           type: "conversation_initiation_client_data",
-          conversation_config_override: conversationConfigOverride,
+          conversation_config_override: {
+            asr: { user_input_audio_format: "pcm_16000" },
+            tts: { agent_output_audio_format: "pcm_16000" },
+            conversation: {
+              client_events: [
+                "audio",
+                "interruption",
+                "agent_response",
+                "user_transcript",
+                "agent_response_correction",
+                "agent_tool_response",
+                "vad_score",
+                "ping",
+              ],
+            },
+          },
           dynamic_variables: {
             tenant_id: tenantId,
             conversation_id: conversationId,
@@ -537,7 +448,6 @@ Deno.serve(async (req) => {
           );
           for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
           pendingTelnyxAudio.length = 0;
-          startPracticeTranscriptRelay();
           break;
         }
 
@@ -593,17 +503,12 @@ Deno.serve(async (req) => {
         case "agent_response": {
           const text = msg.agent_response_event?.agent_response;
           if (text) {
-            const normalizedText = text.trim();
-            const isDuplicate = normalizedText === lastAgentResponseText && Date.now() - lastAgentResponseAt < 10_000;
-            if (isDuplicate) break;
-            lastAgentResponseText = normalizedText;
-            lastAgentResponseAt = Date.now();
             await supabase.from("transcript_entries").insert({
               conversation_id: conversationId,
               role: "agent",
-              text: normalizedText,
+              text,
             });
-            if (botKind === "chris" && isPracticeGoodbye(normalizedText)) {
+            if (botKind === "chris" && isPracticeGoodbye(text)) {
               schedulePracticeHangup("practice caller ended");
             }
           }
