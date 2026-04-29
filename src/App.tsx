@@ -13,6 +13,7 @@ import TenantsPage from "./pages/admin/TenantsPage";
 import NumbersPage from "./pages/admin/NumbersPage";
 import BookingsPage from "./pages/admin/BookingsPage";
 import DialPage from "./pages/admin/DialPage";
+import PracticePage from "./pages/admin/PracticePage";
 import OAuthCallback from "./pages/OAuthCallback";
 
 const queryClient = new QueryClient();
@@ -34,6 +35,7 @@ const App = () => (
               <Route path="numbers" element={<NumbersPage />} />
               <Route path="bookings" element={<BookingsPage />} />
               <Route path="dial" element={<DialPage />} />
+              <Route path="practice" element={<PracticePage />} />
             </Route>
             <Route path="/oauth/crm/callback" element={<OAuthCallback />} />
             <Route path="*" element={<NotFound />} />

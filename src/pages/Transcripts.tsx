@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { ArrowLeft, MessageSquare, Clock, Phone, PhoneIncoming, Globe } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,7 @@ interface Entry {
 interface Tenant { id: string; name: string }
 
 export default function Transcripts() {
+  const [searchParams] = useSearchParams();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [tenantFilter, setTenantFilter] = useState("all");
@@ -44,9 +45,11 @@ export default function Transcripts() {
       ]);
       setConversations((c.data as Conversation[]) || []);
       setTenants((t.data as Tenant[]) || []);
+      const requestedConversation = searchParams.get("conversation");
+      if (requestedConversation) setSelected(requestedConversation);
       setLoading(false);
     })();
-  }, []);
+  }, [searchParams]);
 
   useEffect(() => {
     if (!selected) { setEntries([]); return; }
@@ -98,6 +101,7 @@ export default function Transcripts() {
                 <SelectItem value="web">Web</SelectItem>
                 <SelectItem value="inbound">Inbound</SelectItem>
                 <SelectItem value="outbound">Outbound</SelectItem>
+                <SelectItem value="practice">Practice</SelectItem>
               </SelectContent>
             </Select>
             <Select value={tenantFilter} onValueChange={setTenantFilter}>

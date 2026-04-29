@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
-import { Building2, Phone, Calendar, PhoneOutgoing, FileText, LogOut, Home } from "lucide-react";
+import { Building2, Phone, Calendar, PhoneOutgoing, FileText, LogOut, Home, Bot } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -79,6 +79,9 @@ export default function AdminLayout() {
         </NavLink>
         <NavLink to="/admin/dial" className={({ isActive }) => cn(navItem, isActive ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50")}>
           <PhoneOutgoing className="w-4 h-4" /> Outbound dial
+        </NavLink>
+        <NavLink to="/admin/practice" className={({ isActive }) => cn(navItem, isActive ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50")}>
+          <Bot className="w-4 h-4" /> Practice call
         </NavLink>
         <NavLink to="/transcripts" className={cn(navItem, "text-muted-foreground hover:bg-muted/50")}>
           <FileText className="w-4 h-4" /> Transcripts

@@ -29,3 +29,6 @@ verify_jwt = false
 
 [functions.ghl-test-contact-debug]
 verify_jwt = false
+
+[functions.practice-bot-call]
+verify_jwt = false

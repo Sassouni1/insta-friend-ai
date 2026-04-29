@@ -12,6 +12,18 @@ import {
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SAM_AGENT_NAME = "Sam - Hair Systems";
+const CHRIS_AGENT_NAME = "Chris - Practice Caller";
+const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
+
+const DEFAULT_CHRIS_SCRIPT = `You are Chris, a realistic practice lead calling about hair systems.
+
+You are calling Sam, an appointment setter. Wait for Sam to speak first.
+Keep answers short, natural, and specific. Do not mention that this is a test.
+If Sam asks who you are, say your name is Chris.
+If Sam asks why you are calling, say you were looking into hair systems.
+If Sam asks about timing, say afternoons are best and you are in Pacific time.
+If Sam offers appointment slots, choose the first clear option.`;
 
 function resolveElevenLabsKey(): string {
   return (
@@ -21,18 +33,112 @@ function resolveElevenLabsKey(): string {
   );
 }
 
-async function getOrFetchAgentId(supabase: any, apiKey: string): Promise<string | null> {
+function buildChrisPrompt(script: string): string {
+  return `You are Chris, a practice caller for an inbound sales training call.
+
+You are speaking to Sam, who is the sales appointment setter.
+Your job is to behave like a real lead and respond to Sam's questions.
+
+Rules:
+- Wait for Sam to speak first.
+- Do not reveal that you are an AI, bot, or test caller.
+- Keep responses natural and brief.
+- Answer one question at a time.
+- If Sam asks for contact details, use the details in the script.
+- If Sam tries to book you and gives real time options, pick one.
+- End naturally after the appointment is confirmed.
+
+Chris script:
+${script}`;
+}
+
+function buildChrisConversationConfig(script: string) {
+  return {
+    agent: {
+      prompt: { prompt: buildChrisPrompt(script) },
+      first_message: "",
+      language: "en",
+    },
+    turn: {
+      mode: "turn",
+      turn_timeout: 4,
+      turn_eagerness: "normal",
+    },
+    asr: {
+      quality: "high",
+      keywords: ["hair system", "hair loss", "consultation", "appointment", "Pacific", "afternoon"],
+    },
+    tts: {
+      model_id: "eleven_flash_v2",
+      voice_id: Deno.env.get("PRACTICE_CHRIS_VOICE_ID")?.trim() || DEFAULT_CHRIS_VOICE_ID,
+      stability: 0.68,
+      similarity_boost: 0.75,
+      speed: 0.97,
+    },
+  };
+}
+
+async function elevenLabsJson(
+  url: string,
+  options: RequestInit,
+): Promise<{ ok: boolean; status: number; data: any; text: string }> {
+  const res = await fetch(url, options);
+  const text = await res.text();
+  let data: any;
+  try { data = JSON.parse(text); } catch { data = text; }
+  return { ok: res.ok, status: res.status, data, text };
+}
+
+async function ensureAgentId(apiKey: string, name: string, conversationConfig?: Record<string, unknown>): Promise<string | null> {
+  const headers = { "xi-api-key": apiKey, "Content-Type": "application/json" };
+  const list = await elevenLabsJson("https://api.elevenlabs.io/v1/convai/agents", { headers });
+  if (!list.ok) {
+    console.error(`[bridge] list agents failed ${list.status}: ${list.text.slice(0, 200)}`);
+    return null;
+  }
+
+  const existing = (list.data?.agents || []).find((agent: any) => agent.name === name);
+  let agentId: string | null = existing?.agent_id || null;
+
+  if (!agentId && conversationConfig) {
+    const created = await elevenLabsJson("https://api.elevenlabs.io/v1/convai/agents/create", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name, conversation_config: conversationConfig }),
+    });
+    if (!created.ok) {
+      console.error(`[bridge] create ${name} failed ${created.status}: ${created.text.slice(0, 300)}`);
+      return null;
+    }
+    agentId = created.data?.agent_id || null;
+  }
+
+  if (agentId && conversationConfig) {
+    const patched = await elevenLabsJson(`https://api.elevenlabs.io/v1/convai/agents/${agentId}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ name, conversation_config: conversationConfig }),
+    });
+    if (!patched.ok) {
+      console.warn(`[bridge] patch ${name} failed ${patched.status}: ${patched.text.slice(0, 300)}`);
+    }
+  }
+
+  return agentId;
+}
+
+async function getOrFetchAgentId(apiKey: string, botKind: string, script: string): Promise<string | null> {
+  if (botKind === "chris") {
+    const envAgentId = Deno.env.get("PRACTICE_CHRIS_AGENT_ID")?.trim();
+    if (envAgentId) return envAgentId;
+    return ensureAgentId(apiKey, CHRIS_AGENT_NAME, buildChrisConversationConfig(script));
+  }
+
   const envAgentId = Deno.env.get("ELEVENLABS_AGENT_ID")?.trim();
   if (envAgentId) return envAgentId;
 
   try {
-    const res = await fetch("https://api.elevenlabs.io/v1/convai/agents", {
-      headers: { "xi-api-key": apiKey },
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const agent = (data.agents || []).find((a: any) => a.name === "Sam - Hair Systems");
-    return agent?.agent_id || null;
+    return ensureAgentId(apiKey, SAM_AGENT_NAME);
   } catch {
     return null;
   }
@@ -64,6 +170,7 @@ Deno.serve(async (req) => {
   const callerEmail = url.searchParams.get("email") || "";
   const companyName = url.searchParams.get("company") || "";
   const tenantTimezone = url.searchParams.get("tz") || "";
+  const requestedBot = url.searchParams.get("bot") || "sam";
 
   if (!conversationId || !tenantId) {
     return new Response("missing conv or tenant", { status: 400 });
@@ -75,7 +182,18 @@ Deno.serve(async (req) => {
   }
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-  const agentId = await getOrFetchAgentId(supabase, apiKey);
+  const { data: conversationRow } = await supabase
+    .from("conversations")
+    .select("agent_id, telnyx_event_payload")
+    .eq("id", conversationId)
+    .maybeSingle();
+  const metadata = (conversationRow?.telnyx_event_payload || {}) as Record<string, unknown>;
+  const botKind = requestedBot === "chris" || conversationRow?.agent_id === "practice_chris" ? "chris" : "sam";
+  const practiceScript = typeof metadata.practice_script === "string" && metadata.practice_script.trim()
+    ? metadata.practice_script
+    : DEFAULT_CHRIS_SCRIPT;
+
+  const agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript);
   if (!agentId) {
     return new Response("ElevenLabs agent not found", { status: 500 });
   }
@@ -128,7 +246,7 @@ Deno.serve(async (req) => {
   const INBOUND_SPEECH_THRESHOLD = 180;
   const pendingTelnyxAudio: string[] = [];
 
-  console.log(`[bridge ${conversationId}] params tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
+  console.log(`[bridge ${conversationId}] params bot=${botKind} tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
 
   let connectedAt: number | null = null;
   let startSeen = false;
