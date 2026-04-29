@@ -19,7 +19,7 @@ const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
 
 const DEFAULT_CHRIS_SCRIPT = `You are Chris, a realistic practice lead calling about hair systems.
 
-You are calling Sam, an appointment setter. Wait for Sam to speak first.
+You are answering Sam, an appointment setter. Answer naturally when the call connects.
 Keep answers short, natural, and specific. Do not mention that this is a test.
 If Sam asks who you are, say your name is Chris.
 If Sam asks why you are calling, say you were looking into hair systems.
@@ -41,7 +41,7 @@ You are speaking to Sam, who is the sales appointment setter.
 Your job is to behave like a real lead and respond to Sam's questions.
 
 Rules:
-- Wait for Sam to speak first.
+- Start naturally when the call connects by saying who you are, then let Sam lead.
 - Do not reveal that you are an AI, bot, or test caller.
 - Keep responses natural and brief.
 - Answer one question at a time.
@@ -78,7 +78,7 @@ function buildChrisConversationConfig(script: string) {
   return {
     agent: {
       prompt: { prompt: buildChrisPrompt(script) },
-      first_message: "",
+      first_message: "Hey, this is Chris.",
       language: "en",
     },
     turn: {
