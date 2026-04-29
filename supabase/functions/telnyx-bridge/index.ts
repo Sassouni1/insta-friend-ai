@@ -54,6 +54,51 @@ Chris script:
 ${script}`;
 }
 
+function buildSamPrompt(ctx: {
+  companyName: string;
+  firstName: string;
+  callerName: string;
+  callerPhone: string;
+  callerEmail: string;
+  tenantTimezone: string;
+  tenantId: string;
+  conversationId: string;
+}): string {
+  const company = ctx.companyName || "the company";
+  const firstName = ctx.firstName || "there";
+  const callerName = ctx.callerName || firstName;
+  return `You are Sam, the voice appointment setter for ${company}.
+
+Known lead context:
+- first_name: ${firstName}
+- caller_name: ${callerName}
+- caller_phone: ${ctx.callerPhone}
+- caller_email: ${ctx.callerEmail || "unknown"}
+- company_name: ${company}
+- tenant_timezone: ${ctx.tenantTimezone || "unknown"}
+- tenant_id: ${ctx.tenantId}
+- conversation_id: ${ctx.conversationId}
+
+Style:
+- relaxed, grounded, natural
+- ask one question at a time
+- do not repeat the same sentence if the caller has not responded
+- if unclear, ask them to repeat instead of guessing
+
+Goal: book a real consultation for hair systems / hair loss options.
+
+Flow:
+1. Confirm you reached the right person.
+2. Remind them they were looking into hair systems or options for hair loss.
+3. Ask brief discovery questions one at a time.
+4. Ask whether mornings or afternoons are better.
+5. Ask whether they are in Pacific, Central, or Eastern time.
+6. Use the ghl_calendar_tool for real availability. Never invent dates or times.
+7. Offer two concrete slots.
+8. Book with ghl_calendar_tool using tenant_id=${ctx.tenantId}, conversation_id=${ctx.conversationId}, caller_name=${callerName}, caller_phone=${ctx.callerPhone}, caller_email=${ctx.callerEmail || ""}, and the chosen slot_iso.
+9. After booking succeeds, confirm the appointment and end naturally.`;
+}
+
 function isPracticeBookingConfirmation(text: string): boolean {
   const normalized = text.toLowerCase();
   return (
@@ -398,25 +443,53 @@ Deno.serve(async (req) => {
       elConnecting = false;
       console.log(`[bridge ${conversationId}] EL open — requesting pcm_16000 both directions`);
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
+      const conversationConfigOverride: Record<string, unknown> = {
+        asr: { user_input_audio_format: "pcm_16000" },
+        tts: { agent_output_audio_format: "pcm_16000" },
+        conversation: {
+          client_events: [
+            "audio",
+            "interruption",
+            "agent_response",
+            "user_transcript",
+            "agent_response_correction",
+            "agent_tool_response",
+            "vad_score",
+            "ping",
+          ],
+        },
+      };
+
+      if (botKind === "sam") {
+        conversationConfigOverride.agent = {
+          prompt: {
+            prompt: buildSamPrompt({
+              companyName,
+              firstName,
+              callerName,
+              callerPhone,
+              callerEmail,
+              tenantTimezone,
+              tenantId,
+              conversationId,
+            }),
+          },
+          first_message: firstName && firstName !== "there"
+            ? `Hey — is this ${firstName}?`
+            : "Hey — thanks for reaching out. Who do I have the pleasure of speaking with?",
+          language: "en",
+        };
+        conversationConfigOverride.turn = {
+          mode: "turn",
+          turn_timeout: -1,
+          turn_eagerness: "normal",
+        };
+      }
+
       socket.send(
         JSON.stringify({
           type: "conversation_initiation_client_data",
-          conversation_config_override: {
-            asr: { user_input_audio_format: "pcm_16000" },
-            tts: { agent_output_audio_format: "pcm_16000" },
-            conversation: {
-              client_events: [
-                "audio",
-                "interruption",
-                "agent_response",
-                "user_transcript",
-                "agent_response_correction",
-                "agent_tool_response",
-                "vad_score",
-                "ping",
-              ],
-            },
-          },
+          conversation_config_override: conversationConfigOverride,
           dynamic_variables: {
             tenant_id: tenantId,
             conversation_id: conversationId,
