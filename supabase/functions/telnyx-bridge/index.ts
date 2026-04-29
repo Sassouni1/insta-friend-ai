@@ -26,12 +26,26 @@ If Sam asks why you are calling, say you were looking into hair systems.
 If Sam asks about timing, say afternoons are best and you are in Pacific time.
 If Sam offers appointment slots, choose the first clear option.`;
 
-function resolveElevenLabsKey(): string {
-  return (
-    Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim() ||
-    Deno.env.get("ELEVENLABS_API_KEY")?.trim() ||
-    ""
-  );
+function resolveElevenLabsKey(preferred?: "connector" | "custom"): { key: string; source: string } {
+  const connector = Deno.env.get("ELEVENLABS_API_KEY")?.trim() || "";
+  const custom = Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim() || "";
+  if (preferred === "custom" && custom) return { key: custom, source: "custom" };
+  if (preferred === "connector" && connector) return { key: connector, source: "connector" };
+  if (connector) return { key: connector, source: "connector" };
+  if (custom) return { key: custom, source: "custom" };
+  return { key: "", source: "none" };
+}
+
+function alternateElevenLabsKey(currentSource: string): { key: string; source: string } | null {
+  if (currentSource === "connector") {
+    const custom = Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim();
+    return custom ? { key: custom, source: "custom" } : null;
+  }
+  if (currentSource === "custom") {
+    const connector = Deno.env.get("ELEVENLABS_API_KEY")?.trim();
+    return connector ? { key: connector, source: "connector" } : null;
+  }
+  return null;
 }
 
 function buildChrisPrompt(script: string): string {
