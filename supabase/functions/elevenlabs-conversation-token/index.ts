@@ -9,6 +9,7 @@ const corsHeaders = {
 const AGENT_NAME = "Sam - Hair Systems";
 const PREFERRED_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0"; // Mark - Natural Conversations
 const FALLBACK_VOICE_ID = "iP95p4xoKVk53GoZ742B"; // Chris (known-good default)
+const AGENT_CONFIG_MODE = "runtime_bridge_shell_v1";
 
 const SAM_CONVERSATION_CONFIG = {
   agent: {
@@ -218,6 +219,7 @@ async function runPipeline(apiKey: string, keySource: string) {
     signed_url: signedUrlOp.ok ? signedUrlOp.data.signed_url : null,
     agent_id: agentId,
     key_source: keySource,
+    agent_config_mode: AGENT_CONFIG_MODE,
     diagnostics,
   };
 }
@@ -266,6 +268,7 @@ serve(async (req) => {
         signed_url: result.signed_url,
         agent_id: result.agent_id,
         key_source: result.key_source,
+        agent_config_mode: result.agent_config_mode,
       }),
       {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
