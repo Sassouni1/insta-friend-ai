@@ -279,11 +279,14 @@ async function elevenLabsOp(
   }
 }
 
-function resolveApiKey(): { key: string; source: string } {
+function resolveApiKey(preferred?: string): { key: string; source: string } {
   const custom = Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim();
   const connector = Deno.env.get("ELEVENLABS_API_KEY")?.trim();
-  if (custom) return { key: custom, source: "custom" };
+  if (preferred === "custom" && custom) return { key: custom, source: "custom" };
+  if (preferred === "connector" && connector) return { key: connector, source: "connector" };
+  // Default: prefer connector over custom
   if (connector) return { key: connector, source: "connector" };
+  if (custom) return { key: custom, source: "custom" };
   throw new Error("No ElevenLabs API key configured");
 }
 
@@ -462,21 +465,29 @@ serve(async (req) => {
       requestUrl.searchParams.get("inspect_agent_config") === "true" ||
       requestUrl.searchParams.get("inspect_agent_config") === "1";
 
-    const { key: primaryKey, source: primarySource } = resolveApiKey();
-    console.log(`Using key source: ${primarySource}`);
+    const requestedKeySource =
+      (typeof requestBody?.key_source === "string" && requestBody.key_source) ||
+      requestUrl.searchParams.get("key_source") ||
+      undefined;
+    const preferred = requestedKeySource === "custom" || requestedKeySource === "connector"
+      ? requestedKeySource
+      : undefined;
+
+    const { key: primaryKey, source: primarySource } = resolveApiKey(preferred);
+    console.log(`Using key source: ${primarySource} (requested=${preferred || "default"})`);
     console.log(`patch_agent_config=${patchAgentConfig}`);
 
     let result = await runPipeline(primaryKey, primarySource, { patchAgentConfig });
 
-    // Fallback: if primary key failed with permission error, try the other key
-    if (!result.success && result.diagnostics?.some((d: OpResult) => d.status === 401 || d.status === 403)) {
+    // Fallback: if primary key failed with permission/not-found error, try the other key
+    if (!result.success && result.diagnostics?.some((d: OpResult) => d.status === 401 || d.status === 403 || d.status === 404)) {
       const fallbackKey = primarySource === "custom"
         ? Deno.env.get("ELEVENLABS_API_KEY")?.trim()
         : Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim();
 
       if (fallbackKey) {
         const fallbackSource = primarySource === "custom" ? "connector" : "custom";
-        console.log(`Primary key (${primarySource}) hit permission error. Trying fallback (${fallbackSource})...`);
+        console.log(`Primary key (${primarySource}) hit permission/not-found error. Trying fallback (${fallbackSource})...`);
         result = await runPipeline(fallbackKey, fallbackSource, { patchAgentConfig });
       }
     }

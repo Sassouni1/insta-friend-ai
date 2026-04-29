@@ -26,12 +26,26 @@ If Sam asks why you are calling, say you were looking into hair systems.
 If Sam asks about timing, say afternoons are best and you are in Pacific time.
 If Sam offers appointment slots, choose the first clear option.`;
 
-function resolveElevenLabsKey(): string {
-  return (
-    Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim() ||
-    Deno.env.get("ELEVENLABS_API_KEY")?.trim() ||
-    ""
-  );
+function resolveElevenLabsKey(preferred?: "connector" | "custom"): { key: string; source: string } {
+  const connector = Deno.env.get("ELEVENLABS_API_KEY")?.trim() || "";
+  const custom = Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim() || "";
+  if (preferred === "custom" && custom) return { key: custom, source: "custom" };
+  if (preferred === "connector" && connector) return { key: connector, source: "connector" };
+  if (connector) return { key: connector, source: "connector" };
+  if (custom) return { key: custom, source: "custom" };
+  return { key: "", source: "none" };
+}
+
+function alternateElevenLabsKey(currentSource: string): { key: string; source: string } | null {
+  if (currentSource === "connector") {
+    const custom = Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim();
+    return custom ? { key: custom, source: "custom" } : null;
+  }
+  if (currentSource === "custom") {
+    const connector = Deno.env.get("ELEVENLABS_API_KEY")?.trim();
+    return connector ? { key: connector, source: "connector" } : null;
+  }
+  return null;
 }
 
 function buildChrisPrompt(script: string): string {
@@ -198,10 +212,11 @@ Deno.serve(async (req) => {
     return new Response("missing conv or tenant", { status: 400 });
   }
 
-  const apiKey = resolveElevenLabsKey();
+  let { key: apiKey, source: keySource } = resolveElevenLabsKey();
   if (!apiKey) {
     return new Response("ElevenLabs key not configured", { status: 500 });
   }
+  console.log(`[bridge ${conversationId}] using ElevenLabs key source=${keySource}`);
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const { data: conversationRow } = await supabase
@@ -215,28 +230,55 @@ Deno.serve(async (req) => {
     ? metadata.practice_script
     : DEFAULT_CHRIS_SCRIPT;
 
-  const agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript);
+  let agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript);
+  if (!agentId) {
+    const alt = alternateElevenLabsKey(keySource);
+    if (alt) {
+      console.warn(`[bridge ${conversationId}] agent lookup failed with ${keySource}; falling back to ${alt.source}`);
+      apiKey = alt.key;
+      keySource = alt.source;
+      agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript);
+    }
+  }
   if (!agentId) {
     return new Response("ElevenLabs agent not found", { status: 500 });
   }
 
+  async function fetchSignedUrl(key: string): Promise<{ ok: boolean; status: number; signedUrl?: string; text?: string }> {
+    const res = await fetch(
+      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${agentId}`,
+      { headers: { "xi-api-key": key } },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      return { ok: false, status: res.status, text };
+    }
+    const data = await res.json();
+    return { ok: true, status: res.status, signedUrl: data.signed_url };
+  }
+
   let signedUrl: string;
   try {
-    const signRes = await fetch(
-      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${agentId}`,
-      { headers: { "xi-api-key": apiKey } },
-    );
+    let signRes = await fetchSignedUrl(apiKey);
+    if (!signRes.ok && (signRes.status === 401 || signRes.status === 403 || signRes.status === 404)) {
+      const alt = alternateElevenLabsKey(keySource);
+      if (alt) {
+        console.warn(`[bridge ${conversationId}] get-signed-url ${signRes.status} with ${keySource}; falling back to ${alt.source}`);
+        apiKey = alt.key;
+        keySource = alt.source;
+        signRes = await fetchSignedUrl(apiKey);
+      }
+    }
     if (!signRes.ok) {
-      const txt = await signRes.text();
-      console.error(`[bridge ${conversationId}] get-signed-url ${signRes.status}: ${txt.slice(0, 200)}`);
+      console.error(`[bridge ${conversationId}] get-signed-url ${signRes.status} (key=${keySource}): ${(signRes.text || "").slice(0, 200)}`);
       return new Response("Failed to get ElevenLabs signed URL", { status: 500 });
     }
-    const signData = await signRes.json();
-    signedUrl = signData.signed_url;
-    if (!signedUrl) {
-      console.error(`[bridge ${conversationId}] no signed_url in response`);
+    if (!signRes.signedUrl) {
+      console.error(`[bridge ${conversationId}] no signed_url in response (key=${keySource})`);
       return new Response("ElevenLabs signed URL missing", { status: 500 });
     }
+    signedUrl = signRes.signedUrl;
+    console.log(`[bridge ${conversationId}] signed URL acquired with key source=${keySource}`);
   } catch (err) {
     console.error(`[bridge ${conversationId}] signed url error`, err);
     return new Response("ElevenLabs auth failed", { status: 500 });
