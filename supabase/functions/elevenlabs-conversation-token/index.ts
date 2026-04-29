@@ -174,11 +174,23 @@ const SAM_CONVERSATION_CONFIG = {
     },
     first_message: "Hey — thanks for reaching out. Who do I have the pleasure of speaking with?",
     language: "en",
+    disable_first_message_interruptions: true,
   },
   turn: {
     mode: "turn",
-    turn_timeout: -1,
-    turn_eagerness: "normal",
+    turn_timeout: 15,
+    turn_eagerness: "patient",
+  },
+  conversation: {
+    client_events: [
+      "audio",
+      "agent_response",
+      "user_transcript",
+      "agent_response_correction",
+    ],
+  },
+  vad: {
+    background_voice_detection: false,
   },
   asr: {
     quality: "high",
