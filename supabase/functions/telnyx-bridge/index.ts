@@ -9,6 +9,7 @@ import {
   uint8ToBase64,
   upsample8to16,
 } from "../_shared/audio.ts";
+import { telnyxCallControl } from "../_shared/telnyx.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -46,10 +47,21 @@ Rules:
 - Answer one question at a time.
 - If Sam asks for contact details, use the details in the script.
 - If Sam tries to book you and gives real time options, pick one.
-- End naturally after the appointment is confirmed.
+- After Sam confirms the appointment, give one brief goodbye if needed and stop engaging.
+- If Sam restarts the opening script after booking, say you are all set and goodbye.
 
 Chris script:
 ${script}`;
+}
+
+function isPracticeBookingConfirmation(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    /got you (down|booked|scheduled)/.test(normalized) ||
+    /you'?ll get (a )?confirmation/.test(normalized) ||
+    /confirmation with all the details/.test(normalized) ||
+    /see you (then|there)/.test(normalized)
+  );
 }
 
 function buildChrisConversationConfig(script: string) {
@@ -233,6 +245,7 @@ Deno.serve(async (req) => {
   let firstUserChunkSentAt: number | null = null;
   let firstVadLogged = false;
   let vadWarnTimer: number | null = null;
+  let practiceHangupScheduled = false;
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
   let inboundSpeechFrameCount = 0;
@@ -277,6 +290,33 @@ Deno.serve(async (req) => {
       })
       .eq("id", conversationId)
       .then(() => {});
+  };
+
+  const schedulePracticeHangup = (reason: string) => {
+    if (practiceHangupScheduled) return;
+    practiceHangupScheduled = true;
+    console.log(`[bridge ${conversationId}] scheduling practice hangup: ${reason}`);
+    setTimeout(async () => {
+      const { data: callRow } = await supabase
+        .from("conversations")
+        .select("telnyx_call_control_id")
+        .eq("id", conversationId)
+        .maybeSingle();
+      const callControlId = callRow?.telnyx_call_control_id;
+      if (callControlId) {
+        try {
+          const res = await telnyxCallControl(callControlId, "hangup", {});
+          if (!res.ok) {
+            console.error(`[bridge ${conversationId}] practice hangup failed ${res.status}: ${(await res.text()).slice(0, 300)}`);
+          }
+        } catch (err) {
+          console.error(`[bridge ${conversationId}] practice hangup error`, err);
+        }
+      } else {
+        console.warn(`[bridge ${conversationId}] no call_control_id available for practice hangup`);
+      }
+      closeBoth(reason);
+    }, 1800);
   };
 
   function transformTelnyxAudioForEL(mulawB64: string): string {
@@ -443,6 +483,9 @@ Deno.serve(async (req) => {
               role: "user",
               text,
             });
+            if (botKind === "chris" && isPracticeBookingConfirmation(text)) {
+              schedulePracticeHangup("practice booking confirmed");
+            }
           }
           break;
         }
