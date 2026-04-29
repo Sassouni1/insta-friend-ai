@@ -9,7 +9,6 @@ const corsHeaders = {
 const AGENT_NAME = "Sam - Hair Systems";
 const PREFERRED_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0"; // Mark - Natural Conversations
 const FALLBACK_VOICE_ID = "iP95p4xoKVk53GoZ742B"; // Chris (known-good default)
-const AGENT_CONFIG_MODE = "saved_prompt_normal_turn_v1";
 
 const SAM_SCRIPT = `You are Sam, the voice appointment setter for {{company_name}}.
 
@@ -168,19 +167,18 @@ If they say "I don't want something fake looking":
 
 After any objection, return to booking.`;
 
-
 const SAM_CONVERSATION_CONFIG = {
   agent: {
     prompt: {
       prompt: SAM_SCRIPT,
     },
-    first_message: "Hey — is this {{first_name}}?",
+    first_message: "Hey — thanks for reaching out. Who do I have the pleasure of speaking with?",
     language: "en",
   },
   turn: {
     mode: "turn",
-    turn_timeout: -1,
-    turn_eagerness: "normal",
+    turn_timeout: 4,
+    turn_eagerness: "eager",
   },
   asr: {
     quality: "high",
@@ -377,7 +375,6 @@ async function runPipeline(apiKey: string, keySource: string) {
     signed_url: signedUrlOp.ok ? signedUrlOp.data.signed_url : null,
     agent_id: agentId,
     key_source: keySource,
-    agent_config_mode: AGENT_CONFIG_MODE,
     diagnostics,
   };
 }
@@ -426,7 +423,6 @@ serve(async (req) => {
         signed_url: result.signed_url,
         agent_id: result.agent_id,
         key_source: result.key_source,
-        agent_config_mode: result.agent_config_mode,
       }),
       {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
