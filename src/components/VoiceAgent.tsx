@@ -264,17 +264,9 @@ function VoiceAgentInner() {
         conversationIdRef.current = null;
       }
 
-      const sessionConfig: Record<string, unknown> = data?.signed_url
-        ? {
-            signedUrl: data.signed_url,
-          }
-        : {
-            connectionType: "webrtc",
-            conversationToken: data.token,
-          };
-
       await conversation.startSession({
-        ...sessionConfig,
+        connectionType: "webrtc",
+        conversationToken: data.token,
         dynamicVariables: {
           first_name: "",
           caller_name: "",
