@@ -640,10 +640,19 @@ Deno.serve(async (req) => {
           lastForwardedSpeechAt = Date.now();
         }
         if (muted) {
-          if (telnyxMediaCount % 250 === 0) {
-            console.log(`[bridge ${conversationId}] echo-gate: dropping inbound (agent speaking)`);
+          const callerIsBargingIn = typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD;
+          if (callerIsBargingIn) {
+            agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
+            if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
+              telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
+            }
+            console.log(`[bridge ${conversationId}] barge-in: clearing agent audio and forwarding caller speech`);
+          } else {
+            if (telnyxMediaCount % 250 === 0) {
+              console.log(`[bridge ${conversationId}] echo-gate: dropping inbound silence/noise while agent speaking`);
+            }
+            break;
           }
-          break;
         }
         if (elReady && elSocket?.readyState === WebSocket.OPEN) {
           sendUserAudioToEL(payload);
