@@ -9,7 +9,6 @@ import {
   uint8ToBase64,
   upsample8to16,
 } from "../_shared/audio.ts";
-import { GhlClient, flattenSlots, getFreshGhlToken } from "../_shared/ghl.ts";
 import { telnyxCallControl } from "../_shared/telnyx.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -17,11 +16,6 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const SAM_AGENT_NAME = "Sam - Hair Systems";
 const CHRIS_AGENT_NAME = "Chris - Practice Caller";
 const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
-
-interface CalendarSlot {
-  iso: string;
-  spoken: string;
-}
 
 const DEFAULT_CHRIS_SCRIPT = `You are Chris, a realistic practice lead calling about hair systems.
 
@@ -78,63 +72,6 @@ function isPracticeGoodbye(text: string): boolean {
     /\bi'?m all set\b/.test(normalized) ||
     /\bwe'?re all set\b/.test(normalized)
   );
-}
-
-function formatSlotForSpeech(slotIso: string, timezone: string): string {
-  const date = new Date(slotIso);
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone: timezone,
-    timeZoneName: "short",
-  });
-  return formatter.format(date);
-}
-
-function buildAvailabilityContext(slots: CalendarSlot[], timezone: string): string {
-  if (slots.length === 0) {
-    return "LIVE CALENDAR UPDATE: No appointment slots are available in the selected GHL calendar right now. Do not invent appointment times. Ask for a broader day/time preference and say you will check again.";
-  }
-
-  return [
-    "LIVE CALENDAR UPDATE: These are the only real available appointment slots from the connected GHL calendar.",
-    `Calendar timezone: ${timezone}.`,
-    ...slots.map((slot, index) => `Option ${index + 1}: ${slot.spoken}. Internal slot_iso: ${slot.iso}.`),
-    "When booking, offer two of these concrete options naturally. Do not say the internal slot_iso out loud. Do not invent any other date or time.",
-    "After the user chooses one option, confirm that exact option.",
-  ].join("\n");
-}
-
-function normalizeForChoice(text: string): string {
-  return text.toLowerCase().replace(/[^\w\s:]/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function chooseOfferedSlot(text: string, slots: CalendarSlot[], timezone: string): CalendarSlot | null {
-  if (slots.length === 0) return null;
-  const normalized = normalizeForChoice(text);
-
-  if (slots[1] && /\b(second|2nd|option two|option 2|number two|number 2|later one|last one)\b/.test(normalized)) {
-    return slots[1];
-  }
-  if (/\b(first|1st|option one|option 1|number one|number 1|earliest|first one)\b/.test(normalized)) {
-    return slots[0];
-  }
-
-  for (const slot of slots) {
-    const slotDate = new Date(slot.iso);
-    const weekday = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: timezone }).format(slotDate).toLowerCase();
-    const hour = new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: true, timeZone: timezone }).format(slotDate).toLowerCase().replace(/\s/g, "");
-    if (normalized.includes(weekday) && normalized.replace(/\s/g, "").includes(hour)) return slot;
-  }
-
-  if (/\b(sounds good|works|that one|that works|yes|yeah|yep|sure)\b/.test(normalized)) {
-    return slots[0];
-  }
-
-  return null;
 }
 
 function buildChrisConversationConfig(script: string) {
@@ -215,20 +152,8 @@ async function ensureAgentId(apiKey: string, name: string, conversationConfig?: 
 async function getOrFetchAgentId(apiKey: string, botKind: string, script: string): Promise<string | null> {
   if (botKind === "chris") {
     const envAgentId = Deno.env.get("PRACTICE_CHRIS_AGENT_ID")?.trim();
-    const conversationConfig = buildChrisConversationConfig(script);
-    if (envAgentId) {
-      const headers = { "xi-api-key": apiKey, "Content-Type": "application/json" };
-      const patched = await elevenLabsJson(`https://api.elevenlabs.io/v1/convai/agents/${envAgentId}`, {
-        method: "PATCH",
-        headers,
-        body: JSON.stringify({ conversation_config: conversationConfig }),
-      });
-      if (!patched.ok) {
-        console.warn(`[bridge] patch env ${CHRIS_AGENT_NAME} failed ${patched.status}: ${patched.text.slice(0, 300)}`);
-      }
-      return envAgentId;
-    }
-    return ensureAgentId(apiKey, CHRIS_AGENT_NAME, conversationConfig);
+    if (envAgentId) return envAgentId;
+    return ensureAgentId(apiKey, CHRIS_AGENT_NAME, buildChrisConversationConfig(script));
   }
 
   const envAgentId = Deno.env.get("ELEVENLABS_AGENT_ID")?.trim();
@@ -238,91 +163,6 @@ async function getOrFetchAgentId(apiKey: string, botKind: string, script: string
     return ensureAgentId(apiKey, SAM_AGENT_NAME);
   } catch {
     return null;
-  }
-}
-
-async function getLiveCalendarSlots(
-  supabase: ReturnType<typeof createClient>,
-  tenantId: string,
-  fallbackTimezone: string,
-): Promise<{ slots: CalendarSlot[]; timezone: string; calendarId: string | null; error: string | null }> {
-  const { data: tenant, error } = await supabase
-    .from("tenants")
-    .select("ghl_calendar_id, timezone")
-    .eq("id", tenantId)
-    .maybeSingle();
-
-  const timezone = tenant?.timezone || fallbackTimezone || "America/Los_Angeles";
-  if (error || !tenant?.ghl_calendar_id) {
-    return { slots: [], timezone, calendarId: null, error: "tenant ghl config incomplete" };
-  }
-
-  try {
-    const { token, locationId } = await getFreshGhlToken(supabase, tenantId);
-    const client = new GhlClient(token, locationId);
-    const startMs = Date.now();
-    const endMs = startMs + 14 * 24 * 60 * 60 * 1000;
-    const raw = await client.getCalendarSlots(tenant.ghl_calendar_id, startMs, endMs, timezone);
-    const slots = flattenSlots(raw).slice(0, 4).map((iso) => ({
-      iso,
-      spoken: formatSlotForSpeech(iso, timezone),
-    }));
-    return { slots, timezone, calendarId: tenant.ghl_calendar_id, error: null };
-  } catch (err: any) {
-    console.error(`[bridge ${tenantId}] GHL availability failed`, err);
-    return { slots: [], timezone, calendarId: tenant.ghl_calendar_id, error: err?.message || "availability failed" };
-  }
-}
-
-async function bookLiveAppointment(input: {
-  supabase: ReturnType<typeof createClient>;
-  tenantId: string;
-  conversationId: string;
-  callerName: string;
-  callerPhone: string;
-  callerEmail: string;
-  slot: CalendarSlot;
-}): Promise<{ ok: boolean; appointmentId?: string; contactId?: string; error?: string }> {
-  const { supabase, tenantId, conversationId, callerName, callerPhone, callerEmail, slot } = input;
-  const { data: tenant, error } = await supabase
-    .from("tenants")
-    .select("ghl_calendar_id")
-    .eq("id", tenantId)
-    .maybeSingle();
-
-  if (error || !tenant?.ghl_calendar_id) return { ok: false, error: "tenant ghl config incomplete" };
-
-  try {
-    const { token, locationId } = await getFreshGhlToken(supabase, tenantId);
-    const client = new GhlClient(token, locationId);
-    const [firstName, ...rest] = (callerName.trim() || "Chris").split(/\s+/);
-    const contact = await client.upsertContact({
-      firstName,
-      lastName: rest.join(" ") || undefined,
-      email: callerEmail || undefined,
-      phone: callerPhone,
-    });
-    const appt = await client.createAppointment({
-      calendarId: tenant.ghl_calendar_id,
-      contactId: contact.id,
-      startTime: slot.iso,
-    });
-
-    await supabase.from("bookings").insert({
-      tenant_id: tenantId,
-      conversation_id: conversationId,
-      caller_name: callerName || firstName,
-      caller_phone: callerPhone,
-      caller_email: callerEmail || null,
-      slot_iso: slot.iso,
-      ghl_appointment_id: appt.id,
-      status: "confirmed",
-    });
-
-    return { ok: true, appointmentId: appt.id, contactId: contact.id };
-  } catch (err: any) {
-    console.error(`[bridge ${conversationId}] GHL booking failed`, err);
-    return { ok: false, error: err?.message || "booking failed" };
   }
 }
 
@@ -374,14 +214,6 @@ Deno.serve(async (req) => {
   const practiceScript = typeof metadata.practice_script === "string" && metadata.practice_script.trim()
     ? metadata.practice_script
     : DEFAULT_CHRIS_SCRIPT;
-  const calendar = botKind === "sam"
-    ? await getLiveCalendarSlots(supabase, tenantId, tenantTimezone)
-    : { slots: [] as CalendarSlot[], timezone: tenantTimezone || "America/Los_Angeles", calendarId: null, error: null };
-  if (botKind === "sam") {
-    console.log(
-      `[bridge ${conversationId}] GHL availability slots=${calendar.slots.length} tz=${calendar.timezone} error=${calendar.error || "-"}`,
-    );
-  }
 
   const agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript);
   if (!agentId) {
@@ -412,7 +244,6 @@ Deno.serve(async (req) => {
 
   const { socket: telnyxSocket, response } = Deno.upgradeWebSocket(req);
 
-  const effectiveCallerEmail = callerEmail || (metadata.practice_mode ? "chris@example.com" : "");
   let elSocket: WebSocket | null = null;
   let elConnecting = false;
   let telnyxStreamId: string | null = null;
@@ -429,9 +260,6 @@ Deno.serve(async (req) => {
   let telnyxFrameCount = 0;
   let inboundSpeechFrameCount = 0;
   let firstInboundSpeechAt: string | null = null;
-  let calendarOfferMade = false;
-  let bookingInFlight = false;
-  let bookedAppointmentId: string | null = null;
   let bridgeClosed = false;
   let agentSpeakingUntil = 0;
   let lastForwardedSpeechAt = 0;
@@ -591,11 +419,10 @@ Deno.serve(async (req) => {
             conversation_id: conversationId,
             caller_phone: callerPhone,
             caller_name: callerName,
-            caller_email: effectiveCallerEmail,
+            caller_email: callerEmail,
             first_name: firstName,
             company_name: companyName,
-            tenant_timezone: calendar.timezone || tenantTimezone,
-            live_calendar_slots: calendar.slots.map((slot, index) => `Option ${index + 1}: ${slot.spoken}`).join("; "),
+            tenant_timezone: tenantTimezone,
           },
         }),
       );
@@ -666,49 +493,6 @@ Deno.serve(async (req) => {
               role: "user",
               text,
             });
-            if (botKind === "sam" && calendarOfferMade && !bookingInFlight && !bookedAppointmentId) {
-              const selectedSlot = chooseOfferedSlot(text, calendar.slots, calendar.timezone);
-              if (selectedSlot) {
-                bookingInFlight = true;
-                console.log(`[bridge ${conversationId}] booking selected slot ${selectedSlot.iso} from user="${text.slice(0, 120)}"`);
-                const booking = await bookLiveAppointment({
-                  supabase,
-                  tenantId,
-                  conversationId,
-                  callerName: callerName || "Chris",
-                  callerPhone,
-                  callerEmail: effectiveCallerEmail,
-                  slot: selectedSlot,
-                });
-                bookingInFlight = false;
-                if (booking.ok) {
-                  bookedAppointmentId = booking.appointmentId || null;
-                  await supabase.from("transcript_entries").insert({
-                    conversation_id: conversationId,
-                    role: "agent",
-                    text: `Booked GHL appointment ${booking.appointmentId} for ${selectedSlot.spoken} (${selectedSlot.iso}).`,
-                  });
-                  if (elSocket?.readyState === WebSocket.OPEN) {
-                    elSocket.send(JSON.stringify({
-                      type: "contextual_update",
-                      text: `BOOKING TOOL RESULT: Appointment successfully booked in GHL. Appointment ID: ${booking.appointmentId}. Confirm to the caller: ${selectedSlot.spoken}.`,
-                    }));
-                  }
-                } else {
-                  await supabase.from("transcript_entries").insert({
-                    conversation_id: conversationId,
-                    role: "agent",
-                    text: `GHL booking failed for ${selectedSlot.iso}: ${booking.error}`,
-                  });
-                  if (elSocket?.readyState === WebSocket.OPEN) {
-                    elSocket.send(JSON.stringify({
-                      type: "contextual_update",
-                      text: `BOOKING TOOL RESULT: Booking failed: ${booking.error}. Do not tell the caller they are booked. Ask for another time or say you need to follow up.`,
-                    }));
-                  }
-                }
-              }
-            }
             if (botKind === "chris" && isPracticeBookingConfirmation(text)) {
               schedulePracticeHangup("practice booking confirmed");
             }
@@ -724,26 +508,6 @@ Deno.serve(async (req) => {
               role: "agent",
               text,
             });
-            if (botKind === "sam" && calendar.slots.length > 0) {
-              const normalized = text.toLowerCase();
-              const mentionsLiveSlot = calendar.slots.some((slot) => {
-                const spoken = slot.spoken.toLowerCase();
-                const weekday = spoken.split(",")[0];
-                return normalized.includes(weekday) || normalized.includes("option 1") || normalized.includes("option one");
-              });
-              if (
-                mentionsLiveSlot &&
-                (
-                  normalized.includes("which") ||
-                  normalized.includes("work") ||
-                  normalized.includes("available") ||
-                  normalized.includes("option")
-                )
-              ) {
-                calendarOfferMade = true;
-                console.log(`[bridge ${conversationId}] calendar offer detected`);
-              }
-            }
             if (botKind === "chris" && isPracticeGoodbye(text)) {
               schedulePracticeHangup("practice caller ended");
             }
