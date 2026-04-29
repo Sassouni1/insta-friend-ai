@@ -9,6 +9,34 @@ const TELNYX_PUBLIC_KEY = Deno.env.get("TELNYX_PUBLIC_KEY") || "";
 
 const BRIDGE_WS_URL = `wss://${new URL(SUPABASE_URL).host.replace(".supabase.co", ".functions.supabase.co")}/telnyx-bridge`;
 
+async function findRecentPracticeAnswer(
+  supabase: ReturnType<typeof createClient>,
+  fromNumber: string,
+  toNumber: string,
+) {
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("conversations")
+    .select("id, tenant_id, telnyx_event_payload, started_at")
+    .eq("direction", "practice")
+    .gte("started_at", fiveMinutesAgo)
+    .order("started_at", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    console.error("[telnyx-inbound] practice lookup failed", error);
+    return null;
+  }
+
+  return (data || []).find((row: any) => {
+    const meta = row.telnyx_event_payload || {};
+    return meta.practice_mode === "sam_to_chris" &&
+      meta.practice_answer_bot === "chris" &&
+      meta.practice_from_number === fromNumber &&
+      meta.practice_target_number === toNumber;
+  }) || null;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "method not allowed" }, 405);
@@ -41,9 +69,17 @@ serve(async (req) => {
 
   if (eventType && callControlIdFromEvent && eventType !== "call.initiated") {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const { data: existingConv } = await supabase
+      .from("conversations")
+      .select("telnyx_event_payload")
+      .eq("telnyx_call_control_id", callControlIdFromEvent)
+      .maybeSingle();
+    const existingPayload = (existingConv?.telnyx_event_payload || {}) as Record<string, unknown>;
     const update: Record<string, unknown> = {
       telnyx_call_status: eventType,
-      telnyx_event_payload: payload,
+      telnyx_event_payload: existingPayload.practice_mode
+        ? { ...existingPayload, last_telnyx_event_type: eventType, last_telnyx_payload: payload }
+        : payload,
     };
     if (callSessionIdFromEvent) update.telnyx_call_session_id = callSessionIdFromEvent;
     if (payload.call_leg_id) update.telnyx_call_leg_id = payload.call_leg_id;
@@ -74,6 +110,7 @@ serve(async (req) => {
   const fromNumber: string = payload.from;
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  const practiceAnswer = await findRecentPracticeAnswer(supabase, fromNumber, toNumber);
 
   // Look up tenant by dialed number
   const { data: phoneRow, error: phoneErr } = await supabase
@@ -89,15 +126,31 @@ serve(async (req) => {
     return jsonResponse({ ok: false, reason: "no tenant" });
   }
 
+  const practiceMetadata = (practiceAnswer?.telnyx_event_payload || {}) as Record<string, unknown>;
+  const answerBot = practiceAnswer ? "chris" : "sam";
+  const conversationDirection = practiceAnswer ? "practice" : "inbound";
+  const conversationInsert: Record<string, unknown> = {
+    tenant_id: phoneRow.tenant_id,
+    caller_phone: fromNumber,
+    direction: conversationDirection,
+    telnyx_call_control_id: callControlId,
+  };
+  if (practiceAnswer) {
+    conversationInsert.agent_id = "practice_chris";
+    conversationInsert.telnyx_event_payload = {
+      practice_mode: "sam_to_chris",
+      practice_bot: "chris",
+      practice_parent_conversation_id: practiceAnswer.id,
+      practice_target_number: toNumber,
+      practice_from_number: fromNumber,
+      practice_script: practiceMetadata.practice_script,
+    };
+  }
+
   // Create conversation row
   const { data: convRow, error: convErr } = await supabase
     .from("conversations")
-    .insert({
-      tenant_id: phoneRow.tenant_id,
-      caller_phone: fromNumber,
-      direction: "inbound",
-      telnyx_call_control_id: callControlId,
-    })
+    .insert(conversationInsert)
     .select("id")
     .single();
 
@@ -107,7 +160,22 @@ serve(async (req) => {
     return jsonResponse({ ok: false, reason: "db error" });
   }
 
-  const streamUrl = `${BRIDGE_WS_URL}?conv=${convRow.id}&tenant=${phoneRow.tenant_id}&caller=${encodeURIComponent(fromNumber)}`;
+  const { data: tenantRow } = await supabase
+    .from("tenants")
+    .select("name, timezone")
+    .eq("id", phoneRow.tenant_id)
+    .maybeSingle();
+
+  const streamParams = new URLSearchParams({
+    conv: convRow.id,
+    tenant: phoneRow.tenant_id,
+    caller: fromNumber,
+    bot: answerBot,
+  });
+  if (answerBot === "chris") streamParams.set("name", "Chris");
+  if (tenantRow?.name) streamParams.set("company", tenantRow.name);
+  if (tenantRow?.timezone) streamParams.set("tz", tenantRow.timezone);
+  const streamUrl = `${BRIDGE_WS_URL}?${streamParams.toString()}`;
 
   // Answer with WebSocket bidirectional streaming. inbound_track = caller's mic only.
   // We send TTS back via WS `media` frames; bidirectional_mode=rtp is required for

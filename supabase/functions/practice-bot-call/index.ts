@@ -15,6 +15,7 @@ const BodySchema = z.object({
   target_number_id: z.string().uuid().optional(),
   target_number: z.string().min(8).optional(),
   chris_script: z.string().min(20).max(8000),
+  mode: z.enum(["sam_to_chris", "chris_to_sam"]).optional().default("sam_to_chris"),
 });
 
 serve(async (req) => {
@@ -44,7 +45,7 @@ serve(async (req) => {
   const parsed = BodySchema.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) return jsonResponse({ error: parsed.error.flatten().fieldErrors }, 400);
 
-  const { from_number_id, target_number_id, target_number, chris_script } = parsed.data;
+  const { from_number_id, target_number_id, target_number, chris_script, mode } = parsed.data;
 
   const { data: fromRow, error: fromErr } = await admin
     .from("phone_numbers")
@@ -96,12 +97,15 @@ serve(async (req) => {
       tenant_id: targetTenantId || fromRow.tenant_id,
       caller_phone: targetNumber,
       direction: "practice",
-      agent_id: "practice_chris",
+      agent_id: mode === "sam_to_chris" ? "practice_sam" : "practice_chris",
       telnyx_event_payload: {
-        practice_bot: "chris",
+        practice_mode: mode,
+        practice_outbound_bot: mode === "sam_to_chris" ? "sam" : "chris",
+        practice_answer_bot: mode === "sam_to_chris" ? "chris" : "sam",
         practice_target_number: targetNumber,
         practice_from_number: fromRow.e164_number,
         practice_script: chris_script,
+        practice_expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
       },
     })
     .select("id")
@@ -115,9 +119,9 @@ serve(async (req) => {
   const params = new URLSearchParams({
     conv: convRow.id,
     tenant: targetTenantId || fromRow.tenant_id,
-    caller: fromRow.e164_number,
+    caller: targetNumber,
     name: "Chris",
-    bot: "chris",
+    bot: mode === "sam_to_chris" ? "sam" : "chris",
   });
   if (tenantRow?.name) params.set("company", tenantRow.name);
   if (tenantRow?.timezone) params.set("tz", tenantRow.timezone);
@@ -160,6 +164,8 @@ serve(async (req) => {
     ok: true,
     conversation_id: convRow.id,
     call_control_id: callControlId,
-    message: `Chris is dialing ${targetNumber} from ${fromRow.e164_number}.`,
+    message: mode === "sam_to_chris"
+      ? `Sam is dialing Chris at ${targetNumber} from ${fromRow.e164_number}.`
+      : `Chris is dialing Sam at ${targetNumber} from ${fromRow.e164_number}.`,
   });
 });

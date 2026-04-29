@@ -26,7 +26,7 @@ interface Tenant {
 const DEFAULT_CHRIS_SCRIPT = `You are Chris, a realistic practice lead calling about hair systems.
 
 Stay natural and concise. Do not mention that you are an AI or a practice caller.
-Answer Sam's questions directly, one at a time.
+You are answering Sam's outbound sales call. Answer Sam's questions directly, one at a time.
 
 Profile:
 - Your name is Chris.
@@ -97,6 +97,7 @@ export default function PracticePage() {
           target_number_id: targetNumberId || undefined,
           target_number: targetNumberId ? undefined : normalizedManualTarget,
           chris_script: script,
+          mode: "sam_to_chris",
         },
       });
 
@@ -105,7 +106,7 @@ export default function PracticePage() {
 
       setConversationId(data?.conversation_id || null);
       setMessage(data?.message || "Practice call started.");
-      toast({ title: "Practice call started", description: "Chris is dialing the selected Sam number." });
+      toast({ title: "Practice call started", description: "Sam is dialing the selected Chris number." });
     } catch (err: unknown) {
       const description = err instanceof Error ? err.message : "Could not start the practice call.";
       toast({ variant: "destructive", title: "Practice call failed", description });
@@ -121,22 +122,22 @@ export default function PracticePage() {
         <div>
           <h1 className="text-2xl font-semibold">Practice call</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Chris calls one of your Sam numbers so you can test inbound handling and review transcripts.
+            Sam calls Chris so you can test outbound sales handling and review transcripts.
           </p>
         </div>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2"><Bot className="w-4 h-4" /> Chris caller bot</CardTitle>
-          <CardDescription>Use two different Telnyx numbers when possible: one caller ID for Chris and one inbound number for Sam.</CardDescription>
+          <CardTitle className="text-base flex items-center gap-2"><Bot className="w-4 h-4" /> Sam outbound practice</CardTitle>
+          <CardDescription>Use two different Telnyx numbers: one caller ID for Sam and one answering number for Chris.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
           <div className="grid md:grid-cols-2 gap-4">
             <div>
-              <Label>Bot 2 caller ID</Label>
+              <Label>Bot 1 Sam caller ID</Label>
               <Select value={fromNumberId} onValueChange={setFromNumberId}>
-                <SelectTrigger><SelectValue placeholder="Choose Chris outbound number" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Choose Sam outbound number" /></SelectTrigger>
                 <SelectContent>
                   {outboundNumbers.map((n) => (
                     <SelectItem key={n.id} value={n.id}>
@@ -151,7 +152,7 @@ export default function PracticePage() {
             </div>
 
             <div>
-              <Label>Bot 1 inbound number</Label>
+              <Label>Bot 2 Chris answering number</Label>
               <Select
                 value={targetNumberId}
                 onValueChange={(value) => {
@@ -159,7 +160,7 @@ export default function PracticePage() {
                   setManualTargetNumber("");
                 }}
               >
-                <SelectTrigger><SelectValue placeholder="Choose Sam inbound number" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Choose Chris answering number" /></SelectTrigger>
                 <SelectContent>
                   {targetNumbers.map((n) => (
                     <SelectItem key={n.id} value={n.id}>
@@ -169,13 +170,13 @@ export default function PracticePage() {
                 </SelectContent>
               </Select>
               {fromNumberId && targetNumbers.length === 0 && (
-                <p className="text-xs text-muted-foreground mt-1">No second saved number is active. Paste another Sam inbound number below.</p>
+                <p className="text-xs text-muted-foreground mt-1">No second saved number is active. Paste another Chris answering number below.</p>
               )}
             </div>
           </div>
 
           <div>
-            <Label>Manual Sam inbound number</Label>
+            <Label>Manual Chris answering number</Label>
             <Input
               placeholder="+14155550100"
               value={manualTargetNumber}
@@ -185,7 +186,7 @@ export default function PracticePage() {
               }}
             />
             <p className="text-xs text-muted-foreground mt-1">
-              The pasted number must already be assigned to the Telnyx inbound webhook and saved on the Phone numbers page for Sam to answer.
+              The pasted number must already be assigned to the Telnyx inbound webhook and saved on the Phone numbers page so Chris can answer.
             </p>
           </div>
 
@@ -202,11 +203,11 @@ export default function PracticePage() {
           <div className="flex items-center gap-3 flex-wrap">
             <Button onClick={startPracticeCall} disabled={running || !canStart}>
               <PhoneCall className="w-4 h-4 mr-2" />
-              {running ? "Starting..." : "Start Chris calling Sam"}
+              {running ? "Starting..." : "Start Sam calling Chris"}
             </Button>
             {conversationId && (
               <Button asChild variant="outline">
-                <Link to={`/transcripts?conversation=${conversationId}`}>View Chris transcript</Link>
+                <Link to={`/transcripts?conversation=${conversationId}`}>View practice transcript</Link>
               </Button>
             )}
           </div>
