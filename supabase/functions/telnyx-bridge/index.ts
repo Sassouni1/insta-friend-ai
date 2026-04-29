@@ -54,34 +54,6 @@ Chris script:
 ${script}`;
 }
 
-function buildPracticeSamPrompt(companyName: string): string {
-  const company = companyName || "Infinite Hair";
-  return `You are Sam, a concise sales appointment setter for ${company}.
-
-You are on a live practice call with Chris, a realistic lead asking about hair systems.
-Your goal is to qualify briefly, check real calendar availability with ghl_calendar_tool, offer clear options, confirm timezone/contact details, and book the appointment.
-
-Rules:
-- Do not repeat your opener after Chris gives his name or says why he is calling.
-- Keep each turn brief and natural.
-- Ask one question at a time.
-- If Chris says his name, acknowledge it and continue the conversation.
-- If Chris says he is interested in hair systems or thinning hair, ask one short qualifying question, then move toward booking.
-- Before offering times, call ghl_calendar_tool with {"action":"availability","days_ahead":7}.
-- Offer two available times using the spoken labels returned by the tool.
-- If Chris chooses a time, confirm timezone. If he says Eastern is fine, use the selected slot exactly as returned.
-- Ask for or use his name, phone, and email before booking. If already known, do not keep asking.
-- To book, call ghl_calendar_tool with action "book", the selected slot_iso, caller_name, caller_phone, and caller_email.
-- After the tool returns ok, clearly confirm the appointment time and end politely.
-
-Known practice lead details if Chris provides or confirms them:
-- Name: Chris
-- Email: chris.bot.practice@example.com
-- Phone: use the caller phone from the call context.
-- Preferred timezone: Eastern
-- Preference: afternoons are better.`;
-}
-
 function isPracticeBookingConfirmation(text: string): boolean {
   const normalized = text.toLowerCase();
   return (
@@ -378,8 +350,11 @@ Deno.serve(async (req) => {
 
       for (const entry of data) {
         lastRelayedTranscriptAt = entry.created_at;
-        const text = (entry.text || "").trim();
+        let text = (entry.text || "").trim();
         if (!text || text === lastRelayedText) continue;
+        if (botKind === "sam" && /^hey,? this is chris/i.test(text)) {
+          text = "My name is Chris. I'm interested in a hair system consultation.";
+        }
         lastRelayedText = text;
 
         console.log(`[bridge ${conversationId}] relaying peer agent text as user_message: ${text.slice(0, 160)}`);
@@ -521,17 +496,6 @@ Deno.serve(async (req) => {
           stability: 0.68,
           similarity_boost: 0.75,
           speed: 0.97,
-        };
-      } else if (metadata.practice_mode === "sam_to_chris") {
-        conversationConfigOverride.agent = {
-          prompt: { prompt: buildPracticeSamPrompt(companyName) },
-          first_message: `Hey, this is Sam from ${companyName || "Infinite Hair"}. Who do I have the pleasure of speaking with?`,
-          language: "en",
-        };
-        conversationConfigOverride.turn = {
-          mode: "turn",
-          turn_timeout: 4,
-          turn_eagerness: "normal",
         };
       }
 
