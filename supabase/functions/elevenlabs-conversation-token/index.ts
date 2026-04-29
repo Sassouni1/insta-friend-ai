@@ -174,23 +174,11 @@ const SAM_CONVERSATION_CONFIG = {
     },
     first_message: "Hey — thanks for reaching out. Who do I have the pleasure of speaking with?",
     language: "en",
-    disable_first_message_interruptions: true,
   },
   turn: {
     mode: "turn",
-    turn_timeout: 15,
-    turn_eagerness: "patient",
-  },
-  conversation: {
-    client_events: [
-      "audio",
-      "agent_response",
-      "user_transcript",
-      "agent_response_correction",
-    ],
-  },
-  vad: {
-    background_voice_detection: false,
+    turn_timeout: 4,
+    turn_eagerness: "eager",
   },
   asr: {
     quality: "high",
@@ -252,7 +240,11 @@ function resolveApiKey(): { key: string; source: string } {
   throw new Error("No ElevenLabs API key configured");
 }
 
-async function runPipeline(apiKey: string, keySource: string) {
+async function runPipeline(
+  apiKey: string,
+  keySource: string,
+  options: { patchAgentConfig?: boolean } = {},
+) {
   const headers: Record<string, string> = {
     "xi-api-key": apiKey,
     "Content-Type": "application/json",
@@ -318,8 +310,12 @@ async function runPipeline(apiKey: string, keySource: string) {
     // If 401 on list, we'll try to create directly
   }
 
-  // Step 3: Create if not found
+  // Step 3: Create if not found. Creation is a write, so keep it behind the same explicit patch gate.
   if (!agentId) {
+    if (!options.patchAgentConfig) {
+      return { success: false, diagnostics, key_source: keySource, error: `Agent "${AGENT_NAME}" not found and patch_agent_config was not enabled` };
+    }
+
     const createOp = await elevenLabsOp(
       "create_agent",
       "https://api.elevenlabs.io/v1/convai/agents/create",
@@ -341,23 +337,27 @@ async function runPipeline(apiKey: string, keySource: string) {
     console.log(`Created agent: ${agentId}`);
   }
 
-  // Step 4: Patch agent config (non-fatal)
-  const patchOp = await elevenLabsOp(
-    "patch_agent",
-    `https://api.elevenlabs.io/v1/convai/agents/${agentId}`,
-    {
-      method: "PATCH",
-      headers,
-      body: JSON.stringify({
-        name: AGENT_NAME,
-        conversation_config: configToUse,
-      }),
-    },
-    "convai_write"
-  );
-  diagnostics.push(patchOp);
-  if (!patchOp.ok) {
-    console.warn(`Patch failed (non-fatal): ${patchOp.error_text}`);
+  // Step 4: Patch agent config only when explicitly requested.
+  if (options.patchAgentConfig) {
+    const patchOp = await elevenLabsOp(
+      "patch_agent",
+      `https://api.elevenlabs.io/v1/convai/agents/${agentId}`,
+      {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({
+          name: AGENT_NAME,
+          conversation_config: configToUse,
+        }),
+      },
+      "convai_write"
+    );
+    diagnostics.push(patchOp);
+    if (!patchOp.ok) {
+      console.warn(`Patch failed (non-fatal): ${patchOp.error_text}`);
+    }
+  } else {
+    console.log("Skipping agent config patch; patch_agent_config not enabled");
   }
 
   // Step 5: Get conversation token (WebRTC)
@@ -397,10 +397,25 @@ serve(async (req) => {
   }
 
   try {
+    const requestUrl = new URL(req.url);
+    let requestBody: any = {};
+    try {
+      const rawBody = await req.text();
+      requestBody = rawBody ? JSON.parse(rawBody) : {};
+    } catch {
+      requestBody = {};
+    }
+
+    const patchAgentConfig =
+      requestBody?.patch_agent_config === true ||
+      requestUrl.searchParams.get("patch_agent_config") === "true" ||
+      requestUrl.searchParams.get("patch_agent_config") === "1";
+
     const { key: primaryKey, source: primarySource } = resolveApiKey();
     console.log(`Using key source: ${primarySource}`);
+    console.log(`patch_agent_config=${patchAgentConfig}`);
 
-    let result = await runPipeline(primaryKey, primarySource);
+    let result = await runPipeline(primaryKey, primarySource, { patchAgentConfig });
 
     // Fallback: if primary key failed with permission error, try the other key
     if (!result.success && result.diagnostics?.some((d: OpResult) => d.status === 401 || d.status === 403)) {
@@ -411,7 +426,7 @@ serve(async (req) => {
       if (fallbackKey) {
         const fallbackSource = primarySource === "custom" ? "connector" : "custom";
         console.log(`Primary key (${primarySource}) hit permission error. Trying fallback (${fallbackSource})...`);
-        result = await runPipeline(fallbackKey, fallbackSource);
+        result = await runPipeline(fallbackKey, fallbackSource, { patchAgentConfig });
       }
     }
 
@@ -435,6 +450,7 @@ serve(async (req) => {
         signed_url: result.signed_url,
         agent_id: result.agent_id,
         key_source: result.key_source,
+        patched_agent_config: patchAgentConfig,
       }),
       {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
