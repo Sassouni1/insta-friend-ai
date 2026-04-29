@@ -252,6 +252,9 @@ Deno.serve(async (req) => {
   let elAgentOutputAudioFormat: string | null = null;
   let firstCallerAudioLogged = false;
   let firstAgentAudioSent = false;
+  let firstUserTranscriptSeen = false;
+  let agentResponseCountBeforeUser = 0;
+  let suppressAgentAudioUntilUser = false;
   let firstUserChunkSentAt: number | null = null;
   let firstVadLogged = false;
   let vadWarnTimer: number | null = null;
@@ -454,6 +457,9 @@ Deno.serve(async (req) => {
         case "audio": {
           const b64 = msg.audio_event?.audio_base_64;
           if (!b64) break;
+          if (suppressAgentAudioUntilUser && !firstUserTranscriptSeen) {
+            break;
+          }
           if (!telnyxStreamId) {
             console.log(`[bridge ${conversationId}] dropping EL audio — no Telnyx stream_id yet`);
             break;
@@ -488,6 +494,8 @@ Deno.serve(async (req) => {
         case "user_transcript": {
           const text = msg.user_transcription_event?.user_transcript;
           if (text) {
+            firstUserTranscriptSeen = true;
+            suppressAgentAudioUntilUser = false;
             await supabase.from("transcript_entries").insert({
               conversation_id: conversationId,
               role: "user",
@@ -503,6 +511,14 @@ Deno.serve(async (req) => {
         case "agent_response": {
           const text = msg.agent_response_event?.agent_response;
           if (text) {
+            if (!firstUserTranscriptSeen) {
+              agentResponseCountBeforeUser++;
+              if (agentResponseCountBeforeUser > 1) {
+                suppressAgentAudioUntilUser = true;
+                console.warn(`[bridge ${conversationId}] suppressing repeated agent opener until user transcript`);
+                break;
+              }
+            }
             await supabase.from("transcript_entries").insert({
               conversation_id: conversationId,
               role: "agent",
