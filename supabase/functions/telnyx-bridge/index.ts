@@ -153,12 +153,23 @@ async function ensureAgentId(apiKey: string, name: string, conversationConfig?: 
   return agentId;
 }
 
-async function getOrFetchAgentId(apiKey: string, botKind: string, script: string): Promise<string | null> {
+async function getOrFetchAgentId(
+  apiKey: string,
+  botKind: string,
+  script: string,
+  samVariant: "outbound" | "inbound" = "inbound",
+): Promise<string | null> {
   if (botKind === "chris") {
     const envAgentId = Deno.env.get("PRACTICE_CHRIS_AGENT_ID")?.trim();
     if (envAgentId) return envAgentId;
     return ensureAgentId(apiKey, CHRIS_AGENT_NAME, buildChrisConversationConfig(script));
   }
+
+  // Sam: prefer variant-specific agent (outbound vs inbound), fall back to generic.
+  const variantEnv = samVariant === "outbound"
+    ? Deno.env.get("SAM_OUTBOUND_AGENT_ID")?.trim()
+    : Deno.env.get("SAM_INBOUND_AGENT_ID")?.trim();
+  if (variantEnv) return variantEnv;
 
   const envAgentId = Deno.env.get("ELEVENLABS_AGENT_ID")?.trim();
   if (envAgentId) return envAgentId;
