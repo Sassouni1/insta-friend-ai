@@ -57,6 +57,7 @@ serve(async (req) => {
       .from("conversations")
       .insert({
         tenant_id,
+        caller_name: caller_name || null,
         caller_phone: to_number,
         direction: "outbound",
       })
