@@ -1,42 +1,51 @@
-# Apply practice-direction migration + first live test
+## Root cause
 
-## What this does
+ElevenLabs is killing every WebSocket from `telnyx-bridge` immediately after handshake with:
 
-1. **Run the migration** to allow `conversations.direction = 'practice'`:
-   ```sql
-   ALTER TABLE public.conversations
-     DROP CONSTRAINT IF EXISTS conversations_direction_check;
-   ALTER TABLE public.conversations
-     ADD CONSTRAINT conversations_direction_check
-     CHECK (direction in ('web','inbound','outbound','practice'));
-   ```
+```
+code=1008 reason="Override for field 'first_message' is not allowed by config."
+```
 
-2. **Verify** the new constraint is live by querying `pg_constraint`.
+The bridge sends `conversation_config_override.agent.first_message`, but the EL agent does not have first-message overrides enabled. EL closes the session, so no agent audio and no transcripts are produced — matching the DB result (`media_frame_count=1045`, `transcript_entries=0`). The bridge auto-reconnects, producing the ~80 identical 1008 close errors in logs.
 
-3. **Smoke-test** that an insert with `direction='practice'` is now accepted (insert a throwaway row, confirm it lands, then delete it via a follow-up migration if needed — or just leave it; it's harmless).
+## Fix (telnyx-bridge only, no EL agent changes)
 
-4. **Hand off for the live test**: tell you to open `/admin/practice` and click **Start Chris calling Sam**.
+Edit `supabase/functions/telnyx-bridge/index.ts`, in the `socket.onopen` handler (~line 424):
 
-5. **Tail logs live** from both edge functions while the call runs:
-   - `practice-bot-call` — confirms the outbound dial to Sam's DID was issued
-   - `telnyx-bridge` — confirms the Chris leg (`bot=chris`) connected, audio frames flowed, and ElevenLabs negotiated formats correctly
+1. Remove the entire `agent: { first_message: samFirstMessage }` block from `conversationConfigOverride`. Keep `asr`, `tts`, and `conversation.client_events` overrides — only the `agent` block triggers 1008.
+2. Keep `dynamic_variables.first_name` and `caller_name` exactly as-is so the agent's existing prompt can substitute them.
+3. Leave `samFirstMessage` / `SAM_PHONE_UNKNOWN_FIRST_MESSAGE` defined (harmless) but unused at this site.
 
-## What I'll be watching for in logs
+Resulting handshake:
 
-- `practice-bot-call`: 200 response, Telnyx `call_control_id` returned, no auth errors
-- `telnyx-bridge` Chris leg: `START stream_id=…`, `EL ready`, `FIRST user_audio_chunk sent to EL`, `FIRST agent audio sent to Telnyx`, `vad_score`
-- `telnyx-bridge` Sam leg: same sequence on the inbound side
-- Any `SIP 487 / timeout` or EL close codes get flagged immediately
+```text
+conversation_initiation_client_data
+  conversation_config_override:
+    asr: { user_input_audio_format: pcm_16000 }
+    tts: { agent_output_audio_format: pcm_16000 }
+    conversation: { client_events: [...] }
+  dynamic_variables:
+    first_name, caller_name, caller_phone, caller_email,
+    company_name, tenant_timezone, tenant_id, conversation_id
+-> EL stays open, audio + transcripts flow
+```
 
-## Already done (from previous turn)
+## Caveat on the opener
 
-- ✅ `practice-bot-call` deployed
-- ✅ `telnyx-bridge` redeployed with `bot=chris` branch (verified line 131, 191, 249)
-- ✅ `supabase/config.toml` has `[functions.practice-bot-call] verify_jwt = false`
-- ✅ Secrets present: `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY`, `ELEVENLABS_API_KEY_CUSTOM`
+This restores audio and transcripts. It does NOT guarantee Sam's first spoken line is `"Hey — is this Chris?"` — that depends entirely on what the deployed ElevenLabs agent has saved as its `first_message` and whether its prompt/first message references `{{first_name}}`. Since you've asked us not to touch the agent config, the opener will be whatever the agent is currently configured to say. If it ends up generic, the next step (separate task) is to enable `first_message` overrides on the agent in the EL dashboard, then re-add the override here.
 
-## Only blocker
+## Deploy + verify
 
-The migration file was pushed via GitHub but Lovable's auto-sync only deploys edge functions, not migrations from the repo. I need build-mode access to run the SQL — that's it.
+1. Deploy only `telnyx-bridge`.
+2. Place an outbound test call to +17276374672 with `caller_name="Chris"`.
+3. In `telnyx-bridge` logs confirm:
+   - `EL open` + `EL META` (already present).
+   - NO `EL closed code=1008 reason="Override for field 'first_message' ..."`.
+   - At least one `vad_score`, `agent_response`, and `user_transcript` event.
+4. DB row: `transcript_entries > 0`. Caller hears Sam speak.
 
-Approve this and I'll run the migration, verify, then green-light you to click the button.
+## Not changed
+
+- `SAM_SCRIPT`, agent IDs, voice, turn settings, EL agent platform settings.
+- `elevenlabs-conversation-token`, `telnyx-outbound-call`, `telnyx-inbound`.
+- DB schema / migrations.
