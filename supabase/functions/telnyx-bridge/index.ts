@@ -282,7 +282,7 @@ Deno.serve(async (req) => {
     return new Response(`ElevenLabs auth failed: ${lastSignError}`, { status: 500 });
   }
 
-  console.log(`[bridge ${conversationId}] using ElevenLabs ${elevenLabsKeySource} key agent=${agentId}`);
+  console.log(`[bridge ${conversationId}] using ElevenLabs ${elevenLabsKeySource} key agent=${agentId} samVariant=${samVariant}`);
 
   const { socket: telnyxSocket, response } = Deno.upgradeWebSocket(req);
 
