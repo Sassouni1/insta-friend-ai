@@ -153,12 +153,23 @@ async function ensureAgentId(apiKey: string, name: string, conversationConfig?: 
   return agentId;
 }
 
-async function getOrFetchAgentId(apiKey: string, botKind: string, script: string): Promise<string | null> {
+async function getOrFetchAgentId(
+  apiKey: string,
+  botKind: string,
+  script: string,
+  samVariant: "outbound" | "inbound" = "inbound",
+): Promise<string | null> {
   if (botKind === "chris") {
     const envAgentId = Deno.env.get("PRACTICE_CHRIS_AGENT_ID")?.trim();
     if (envAgentId) return envAgentId;
     return ensureAgentId(apiKey, CHRIS_AGENT_NAME, buildChrisConversationConfig(script));
   }
+
+  // Sam: prefer variant-specific agent (outbound vs inbound), fall back to generic.
+  const variantEnv = samVariant === "outbound"
+    ? Deno.env.get("SAM_OUTBOUND_AGENT_ID")?.trim()
+    : Deno.env.get("SAM_INBOUND_AGENT_ID")?.trim();
+  if (variantEnv) return variantEnv;
 
   const envAgentId = Deno.env.get("ELEVENLABS_AGENT_ID")?.trim();
   if (envAgentId) return envAgentId;
@@ -210,7 +221,7 @@ Deno.serve(async (req) => {
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const { data: conversationRow } = await supabase
     .from("conversations")
-    .select("agent_id, telnyx_event_payload")
+    .select("agent_id, telnyx_event_payload, direction")
     .eq("id", conversationId)
     .maybeSingle();
   const metadata = (conversationRow?.telnyx_event_payload || {}) as Record<string, unknown>;
@@ -219,13 +230,20 @@ Deno.serve(async (req) => {
     ? metadata.practice_script
     : DEFAULT_CHRIS_SCRIPT;
 
+  // Sam variant: outbound when this is an outbound call AND we have a caller name.
+  // Inbound/web/unknown -> inbound agent (unknown-caller opener).
+  const samVariant: "outbound" | "inbound" =
+    conversationRow?.direction === "outbound" && callerName.trim().length > 0
+      ? "outbound"
+      : "inbound";
+
   let signedUrl = "";
   let agentId = "";
   let elevenLabsKeySource = "";
   let lastSignError = "";
 
   for (const keyInfo of elevenLabsKeys) {
-    const candidateAgentId = await getOrFetchAgentId(keyInfo.key, botKind, practiceScript);
+    const candidateAgentId = await getOrFetchAgentId(keyInfo.key, botKind, practiceScript, samVariant);
     if (!candidateAgentId) {
       lastSignError = `${keyInfo.source}: agent not found`;
       console.warn(`[bridge ${conversationId}] ${lastSignError}`);
@@ -264,7 +282,7 @@ Deno.serve(async (req) => {
     return new Response(`ElevenLabs auth failed: ${lastSignError}`, { status: 500 });
   }
 
-  console.log(`[bridge ${conversationId}] using ElevenLabs ${elevenLabsKeySource} key agent=${agentId}`);
+  console.log(`[bridge ${conversationId}] using ElevenLabs ${elevenLabsKeySource} key agent=${agentId} samVariant=${samVariant}`);
 
   const { socket: telnyxSocket, response } = Deno.upgradeWebSocket(req);
 
