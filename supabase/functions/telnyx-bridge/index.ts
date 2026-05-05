@@ -221,7 +221,7 @@ Deno.serve(async (req) => {
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const { data: conversationRow } = await supabase
     .from("conversations")
-    .select("agent_id, telnyx_event_payload")
+    .select("agent_id, telnyx_event_payload, direction")
     .eq("id", conversationId)
     .maybeSingle();
   const metadata = (conversationRow?.telnyx_event_payload || {}) as Record<string, unknown>;
@@ -230,13 +230,20 @@ Deno.serve(async (req) => {
     ? metadata.practice_script
     : DEFAULT_CHRIS_SCRIPT;
 
+  // Sam variant: outbound when this is an outbound call AND we have a caller name.
+  // Inbound/web/unknown -> inbound agent (unknown-caller opener).
+  const samVariant: "outbound" | "inbound" =
+    conversationRow?.direction === "outbound" && callerName.trim().length > 0
+      ? "outbound"
+      : "inbound";
+
   let signedUrl = "";
   let agentId = "";
   let elevenLabsKeySource = "";
   let lastSignError = "";
 
   for (const keyInfo of elevenLabsKeys) {
-    const candidateAgentId = await getOrFetchAgentId(keyInfo.key, botKind, practiceScript);
+    const candidateAgentId = await getOrFetchAgentId(keyInfo.key, botKind, practiceScript, samVariant);
     if (!candidateAgentId) {
       lastSignError = `${keyInfo.source}: agent not found`;
       console.warn(`[bridge ${conversationId}] ${lastSignError}`);
