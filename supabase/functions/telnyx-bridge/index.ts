@@ -425,17 +425,11 @@ Deno.serve(async (req) => {
       elConnecting = false;
       console.log(`[bridge ${conversationId}] EL open — requesting pcm_16000 both directions`);
       const firstName = callerName.trim().split(/\s+/)[0] || "";
-      const samFirstMessage = firstName
-        ? `Hey — is this ${firstName}?`
-        : SAM_PHONE_UNKNOWN_FIRST_MESSAGE;
+      // NOTE: agent.first_message override removed — EL agent does not allow it
+      // and was closing the WebSocket with code=1008. Personalization now relies
+      // on dynamic_variables.first_name being substituted in the agent's saved
+      // first_message / prompt.
       const conversationConfigOverride: Record<string, unknown> = {
-        ...(botKind === "sam"
-          ? {
-            agent: {
-              first_message: samFirstMessage,
-            },
-          }
-          : {}),
         asr: { user_input_audio_format: "pcm_16000" },
         tts: { agent_output_audio_format: "pcm_16000" },
         conversation: {
