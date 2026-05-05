@@ -28,6 +28,8 @@ You are relaxed, grounded, and natural — like a laid-back friend. Never sound 
 - Never read out URLs, meeting links, or long ID strings. Tell them they'll get the link in a confirmation message instead.
 - Never say the word "dollar" or use "$" in spoken responses.
 - Never call the user "Guest", "Guest Caller", or anything with the word "Guest". If you do not have a real first name, ask them what name they'd like to be called by, then use it.
+- Never repeat your opener or first name question verbatim. If you already asked who you are speaking with and the caller says "hello", "hello?", "can you hear me?", "yes?", or another short pleasantry, answer the meta part briefly, then ask for their name in different words. Example: "Yep, I can hear you. What's your name?"
+- If you still do not catch their name after asking, say "Sorry, I didn't catch your name — what should I call you?" Do not restart with "Hey — thanks for reaching out."
 
 === MEMORY / KNOWN CONTEXT ===
 You already know this lead opted in and is on file.
@@ -40,7 +42,7 @@ You already know this lead opted in and is on file.
 - tenant_id: {{tenant_id}}
 - conversation_id: {{conversation_id}}
 
-If first_name is empty, missing, or looks like "Guest" / "unknown" / a placeholder, treat the caller as unknown. In that case skip Stage 1 and Stage 2 and instead start with: "Hey — thanks for reaching out. Who do I have the pleasure of speaking with?" Then once they give a name, use it naturally for the rest of the call and continue from Stage 2 onward (subbing their name in).
+If first_name is empty, missing, or looks like "Guest" / "unknown" / a placeholder, treat the caller as unknown. In that case skip Stage 1 and Stage 2 and instead start with: "Hey — thanks for reaching out. Who am I speaking with?" Then once they give a name, use it naturally for the rest of the call and continue from Stage 2 onward (subbing their name in).
 
 Use known context naturally. Do not ask again for information you already have unless you need to verify or correct it.
 
@@ -172,7 +174,7 @@ const SAM_CONVERSATION_CONFIG = {
     prompt: {
       prompt: SAM_SCRIPT,
     },
-    first_message: "Hey — thanks for reaching out. Who do I have the pleasure of speaking with?",
+    first_message: "Hey — thanks for reaching out. Who am I speaking with?",
     language: "en",
   },
   turn: {
@@ -279,12 +281,15 @@ async function elevenLabsOp(
   }
 }
 
-function resolveApiKey(preferred?: string): { key: string; source: string } {
+type ElevenLabsKeySource = "connector" | "custom";
+
+function resolveApiKey(preferredSource?: string | null): { key: string; source: ElevenLabsKeySource } {
   const custom = Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim();
   const connector = Deno.env.get("ELEVENLABS_API_KEY")?.trim();
-  if (preferred === "custom" && custom) return { key: custom, source: "custom" };
-  if (preferred === "connector" && connector) return { key: connector, source: "connector" };
-  // Default: prefer connector over custom
+
+  if (preferredSource === "custom" && custom) return { key: custom, source: "custom" };
+  if (preferredSource === "connector" && connector) return { key: connector, source: "connector" };
+
   if (connector) return { key: connector, source: "connector" };
   if (custom) return { key: custom, source: "custom" };
   throw new Error("No ElevenLabs API key configured");
@@ -464,22 +469,18 @@ serve(async (req) => {
       requestBody?.inspect_agent_config === true ||
       requestUrl.searchParams.get("inspect_agent_config") === "true" ||
       requestUrl.searchParams.get("inspect_agent_config") === "1";
+    const preferredKeySource =
+      typeof requestBody?.key_source === "string"
+        ? requestBody.key_source
+        : requestUrl.searchParams.get("key_source");
 
-    const requestedKeySource =
-      (typeof requestBody?.key_source === "string" && requestBody.key_source) ||
-      requestUrl.searchParams.get("key_source") ||
-      undefined;
-    const preferred = requestedKeySource === "custom" || requestedKeySource === "connector"
-      ? requestedKeySource
-      : undefined;
-
-    const { key: primaryKey, source: primarySource } = resolveApiKey(preferred);
-    console.log(`Using key source: ${primarySource} (requested=${preferred || "default"})`);
+    const { key: primaryKey, source: primarySource } = resolveApiKey(preferredKeySource);
+    console.log(`Using key source: ${primarySource}`);
     console.log(`patch_agent_config=${patchAgentConfig}`);
 
     let result = await runPipeline(primaryKey, primarySource, { patchAgentConfig });
 
-    // Fallback: if primary key failed with permission/not-found error, try the other key
+    // Fallback: if primary key failed with permission error, try the other key
     if (!result.success && result.diagnostics?.some((d: OpResult) => d.status === 401 || d.status === 403 || d.status === 404)) {
       const fallbackKey = primarySource === "custom"
         ? Deno.env.get("ELEVENLABS_API_KEY")?.trim()
@@ -487,7 +488,7 @@ serve(async (req) => {
 
       if (fallbackKey) {
         const fallbackSource = primarySource === "custom" ? "connector" : "custom";
-        console.log(`Primary key (${primarySource}) hit permission/not-found error. Trying fallback (${fallbackSource})...`);
+        console.log(`Primary key (${primarySource}) hit permission error. Trying fallback (${fallbackSource})...`);
         result = await runPipeline(fallbackKey, fallbackSource, { patchAgentConfig });
       }
     }

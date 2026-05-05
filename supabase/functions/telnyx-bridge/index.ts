@@ -16,6 +16,7 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const SAM_AGENT_NAME = "Sam - Hair Systems";
 const CHRIS_AGENT_NAME = "Chris - Practice Caller";
 const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
+const SAM_PHONE_UNKNOWN_FIRST_MESSAGE = "Hey — thanks for reaching out. Who am I speaking with?";
 
 const DEFAULT_CHRIS_SCRIPT = `You are Chris, a realistic practice lead calling about hair systems.
 
@@ -26,26 +27,15 @@ If Sam asks why you are calling, say you were looking into hair systems.
 If Sam asks about timing, say afternoons are best and you are in Pacific time.
 If Sam offers appointment slots, choose the first clear option.`;
 
-function resolveElevenLabsKey(preferred?: "connector" | "custom"): { key: string; source: string } {
-  const connector = Deno.env.get("ELEVENLABS_API_KEY")?.trim() || "";
-  const custom = Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim() || "";
-  if (preferred === "custom" && custom) return { key: custom, source: "custom" };
-  if (preferred === "connector" && connector) return { key: connector, source: "connector" };
-  if (connector) return { key: connector, source: "connector" };
-  if (custom) return { key: custom, source: "custom" };
-  return { key: "", source: "none" };
-}
+function resolveElevenLabsKeys(): Array<{ key: string; source: "connector" | "custom" }> {
+  const keys: Array<{ key: string; source: "connector" | "custom" }> = [];
+  const connector = Deno.env.get("ELEVENLABS_API_KEY")?.trim();
+  const custom = Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim();
 
-function alternateElevenLabsKey(currentSource: string): { key: string; source: string } | null {
-  if (currentSource === "connector") {
-    const custom = Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim();
-    return custom ? { key: custom, source: "custom" } : null;
-  }
-  if (currentSource === "custom") {
-    const connector = Deno.env.get("ELEVENLABS_API_KEY")?.trim();
-    return connector ? { key: connector, source: "connector" } : null;
-  }
-  return null;
+  if (connector) keys.push({ key: connector, source: "connector" });
+  if (custom) keys.push({ key: custom, source: "custom" });
+
+  return keys;
 }
 
 function buildChrisPrompt(script: string): string {
@@ -212,11 +202,10 @@ Deno.serve(async (req) => {
     return new Response("missing conv or tenant", { status: 400 });
   }
 
-  let { key: apiKey, source: keySource } = resolveElevenLabsKey();
-  if (!apiKey) {
+  const elevenLabsKeys = resolveElevenLabsKeys();
+  if (!elevenLabsKeys.length) {
     return new Response("ElevenLabs key not configured", { status: 500 });
   }
-  console.log(`[bridge ${conversationId}] using ElevenLabs key source=${keySource}`);
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const { data: conversationRow } = await supabase
@@ -230,59 +219,52 @@ Deno.serve(async (req) => {
     ? metadata.practice_script
     : DEFAULT_CHRIS_SCRIPT;
 
-  let agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript);
-  if (!agentId) {
-    const alt = alternateElevenLabsKey(keySource);
-    if (alt) {
-      console.warn(`[bridge ${conversationId}] agent lookup failed with ${keySource}; falling back to ${alt.source}`);
-      apiKey = alt.key;
-      keySource = alt.source;
-      agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript);
-    }
-  }
-  if (!agentId) {
-    return new Response("ElevenLabs agent not found", { status: 500 });
-  }
+  let signedUrl = "";
+  let agentId = "";
+  let elevenLabsKeySource = "";
+  let lastSignError = "";
 
-  async function fetchSignedUrl(key: string): Promise<{ ok: boolean; status: number; signedUrl?: string; text?: string }> {
-    const res = await fetch(
-      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${agentId}`,
-      { headers: { "xi-api-key": key } },
-    );
-    if (!res.ok) {
-      const text = await res.text();
-      return { ok: false, status: res.status, text };
+  for (const keyInfo of elevenLabsKeys) {
+    const candidateAgentId = await getOrFetchAgentId(keyInfo.key, botKind, practiceScript);
+    if (!candidateAgentId) {
+      lastSignError = `${keyInfo.source}: agent not found`;
+      console.warn(`[bridge ${conversationId}] ${lastSignError}`);
+      continue;
     }
-    const data = await res.json();
-    return { ok: true, status: res.status, signedUrl: data.signed_url };
-  }
 
-  let signedUrl: string;
-  try {
-    let signRes = await fetchSignedUrl(apiKey);
-    if (!signRes.ok && (signRes.status === 401 || signRes.status === 403 || signRes.status === 404)) {
-      const alt = alternateElevenLabsKey(keySource);
-      if (alt) {
-        console.warn(`[bridge ${conversationId}] get-signed-url ${signRes.status} with ${keySource}; falling back to ${alt.source}`);
-        apiKey = alt.key;
-        keySource = alt.source;
-        signRes = await fetchSignedUrl(apiKey);
+    try {
+      const signRes = await fetch(
+        `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${candidateAgentId}`,
+        { headers: { "xi-api-key": keyInfo.key } },
+      );
+      if (!signRes.ok) {
+        const txt = await signRes.text();
+        lastSignError = `${keyInfo.source}: get-signed-url ${signRes.status}: ${txt.slice(0, 200)}`;
+        console.error(`[bridge ${conversationId}] ${lastSignError}`);
+        continue;
       }
+      const signData = await signRes.json();
+      if (!signData.signed_url) {
+        lastSignError = `${keyInfo.source}: signed URL missing`;
+        console.error(`[bridge ${conversationId}] ${lastSignError}`);
+        continue;
+      }
+
+      signedUrl = signData.signed_url;
+      agentId = candidateAgentId;
+      elevenLabsKeySource = keyInfo.source;
+      break;
+    } catch (err) {
+      lastSignError = `${keyInfo.source}: signed url error ${err instanceof Error ? err.message : String(err)}`;
+      console.error(`[bridge ${conversationId}] signed url error`, err);
     }
-    if (!signRes.ok) {
-      console.error(`[bridge ${conversationId}] get-signed-url ${signRes.status} (key=${keySource}): ${(signRes.text || "").slice(0, 200)}`);
-      return new Response("Failed to get ElevenLabs signed URL", { status: 500 });
-    }
-    if (!signRes.signedUrl) {
-      console.error(`[bridge ${conversationId}] no signed_url in response (key=${keySource})`);
-      return new Response("ElevenLabs signed URL missing", { status: 500 });
-    }
-    signedUrl = signRes.signedUrl;
-    console.log(`[bridge ${conversationId}] signed URL acquired with key source=${keySource}`);
-  } catch (err) {
-    console.error(`[bridge ${conversationId}] signed url error`, err);
-    return new Response("ElevenLabs auth failed", { status: 500 });
   }
+
+  if (!signedUrl || !agentId) {
+    return new Response(`ElevenLabs auth failed: ${lastSignError}`, { status: 500 });
+  }
+
+  console.log(`[bridge ${conversationId}] using ElevenLabs ${elevenLabsKeySource} key agent=${agentId}`);
 
   const { socket: telnyxSocket, response } = Deno.upgradeWebSocket(req);
 
@@ -312,7 +294,10 @@ Deno.serve(async (req) => {
   const INTERRUPTION_CLEAR_TAIL_MS = 150;
   const RECENT_SPEECH_WINDOW_MS = 1200;
   const INBOUND_SPEECH_THRESHOLD = 180;
+  const BARGE_IN_SPEECH_THRESHOLD = 650;
+  const FIRST_OPENER_BARGE_IN_LOCK_MS = 4500;
   const pendingTelnyxAudio: string[] = [];
+  let firstAgentAudioSentAt: number | null = null;
 
   console.log(`[bridge ${conversationId}] params bot=${botKind} tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
 
@@ -439,8 +424,18 @@ Deno.serve(async (req) => {
     socket.onopen = () => {
       elConnecting = false;
       console.log(`[bridge ${conversationId}] EL open — requesting pcm_16000 both directions`);
-      const firstName = callerName.trim().split(/\s+/)[0] || "there";
+      const firstName = callerName.trim().split(/\s+/)[0] || "";
+      const samFirstMessage = firstName
+        ? `Hey — is this ${firstName}?`
+        : SAM_PHONE_UNKNOWN_FIRST_MESSAGE;
       const conversationConfigOverride: Record<string, unknown> = {
+        ...(botKind === "sam"
+          ? {
+            agent: {
+              first_message: samFirstMessage,
+            },
+          }
+          : {}),
         asr: { user_input_audio_format: "pcm_16000" },
         tts: { agent_output_audio_format: "pcm_16000" },
         conversation: {
@@ -517,6 +512,7 @@ Deno.serve(async (req) => {
           }
 
           const telnyxPayload = transformELAudioForTelnyx(b64);
+          if (!firstAgentAudioSentAt) firstAgentAudioSentAt = Date.now();
           telnyxSocket.send(JSON.stringify({
             event: "media",
             stream_id: telnyxStreamId,
@@ -700,7 +696,16 @@ Deno.serve(async (req) => {
           lastForwardedSpeechAt = Date.now();
         }
         if (muted) {
-          const callerIsBargingIn = typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD;
+          const firstOpenerLocked = !firstUserTranscriptSeen &&
+            firstAgentAudioSentAt !== null &&
+            Date.now() - firstAgentAudioSentAt < FIRST_OPENER_BARGE_IN_LOCK_MS;
+          const callerIsBargingIn = typeof inboundEnergy === "number" && inboundEnergy >= BARGE_IN_SPEECH_THRESHOLD;
+          if (firstOpenerLocked) {
+            if (telnyxMediaCount % 100 === 0) {
+              console.log(`[bridge ${conversationId}] opener-gate: ignoring inbound energy while first opener is playing`);
+            }
+            break;
+          }
           if (callerIsBargingIn) {
             agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
             if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
