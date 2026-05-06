@@ -320,11 +320,25 @@ Deno.serve(async (req) => {
   let telnyxFrameCount = 0;
   let inboundSpeechFrameCount = 0;
   let firstInboundSpeechAt: string | null = null;
+  let lastTelnyxMediaAt: string | null = null;
+  let lastCallerAudioForwardedAt: string | null = null;
+  let lastElVadAt: string | null = null;
+  let lastAgentAudioAt: string | null = null;
+  let elCloseCode: number | null = null;
+  let elCloseReason: string | null = null;
+  let elWasClean: boolean | null = null;
+  let droppedOpenerFrames = 0;
+  let droppedEchoFrames = 0;
+  let forwardedAudioFrames = 0;
+  let forwardedAudioAfterAgentResponseFrames = 0;
+  let lastInboundEnergy: number | null = null;
+  let lastVadScore: number | null = null;
   let bridgeClosed = false;
   let telnyxStartAt: number | null = null;
   let elStartTimer: number | null = null;
   let agentSpeakingUntil = 0;
   let lastForwardedSpeechAt = 0;
+  let lastAgentResponseAt: number | null = null;
   const AGENT_SPEAK_TAIL_MS = 600;
   const INTERRUPTION_CLEAR_TAIL_MS = 150;
   const RECENT_SPEECH_WINDOW_MS = 1200;
@@ -364,6 +378,20 @@ Deno.serve(async (req) => {
         media_frame_count: telnyxMediaCount,
         inbound_speech_frame_count: inboundSpeechFrameCount,
         first_inbound_speech_at: firstInboundSpeechAt,
+        bridge_close_reason: reason,
+        el_close_code: elCloseCode,
+        el_close_reason: elCloseReason,
+        el_was_clean: elWasClean,
+        last_telnyx_media_at: lastTelnyxMediaAt,
+        last_caller_audio_forwarded_at: lastCallerAudioForwardedAt,
+        last_el_vad_at: lastElVadAt,
+        last_agent_audio_at: lastAgentAudioAt,
+        bridge_dropped_opener_frames: droppedOpenerFrames,
+        bridge_dropped_echo_frames: droppedEchoFrames,
+        bridge_forwarded_audio_frames: forwardedAudioFrames,
+        bridge_forwarded_audio_after_agent_response_frames: forwardedAudioAfterAgentResponseFrames,
+        bridge_last_inbound_energy: lastInboundEnergy,
+        bridge_last_vad_score: lastVadScore,
       })
       .eq("id", conversationId)
       .then(() => {});
@@ -436,6 +464,11 @@ Deno.serve(async (req) => {
 
     const transformedAudio = transformTelnyxAudioForEL(mulawB64);
     elSocket.send(JSON.stringify({ user_audio_chunk: transformedAudio }));
+    forwardedAudioFrames++;
+    lastCallerAudioForwardedAt = new Date().toISOString();
+    if (lastAgentResponseAt !== null && Date.now() >= lastAgentResponseAt) {
+      forwardedAudioAfterAgentResponseFrames++;
+    }
 
     if (firstUserChunkSentAt === null) {
       firstUserChunkSentAt = Date.now();
@@ -540,6 +573,7 @@ Deno.serve(async (req) => {
           }
 
           const telnyxPayload = transformELAudioForTelnyx(b64);
+          lastAgentAudioAt = new Date().toISOString();
           if (!firstAgentAudioSentAt) firstAgentAudioSentAt = Date.now();
           telnyxSocket.send(JSON.stringify({
             event: "media",
@@ -579,6 +613,8 @@ Deno.serve(async (req) => {
         case "agent_response": {
           const text = msg.agent_response_event?.agent_response;
           if (text) {
+            lastAgentResponseAt = Date.now();
+            forwardedAudioAfterAgentResponseFrames = 0;
             if (!firstUserTranscriptSeen) {
               agentResponseCountBeforeUser++;
               if (agentResponseCountBeforeUser > 1) {
@@ -608,6 +644,10 @@ Deno.serve(async (req) => {
 
         case "vad_score": {
           const score = msg.vad_score_event?.vad_score ?? msg.vad_score;
+          if (typeof score === "number") {
+            lastVadScore = score;
+            lastElVadAt = new Date().toISOString();
+          }
           if (!firstVadLogged && typeof score === "number") {
             firstVadLogged = true;
             if (vadWarnTimer) clearTimeout(vadWarnTimer);
@@ -648,6 +688,9 @@ Deno.serve(async (req) => {
       const wasReady = elReady;
       elConnecting = false;
       elReady = false;
+      elCloseCode = ev.code;
+      elCloseReason = ev.reason || null;
+      elWasClean = ev.wasClean;
       if (elSocket === socket) elSocket = null;
       console.error(
         `[bridge ${conversationId}] EL closed code=${ev.code} reason="${ev.reason}" wasClean=${ev.wasClean} ready=${wasReady} startSeen=${startSeen} mediaFrames=${telnyxMediaCount}`,
@@ -714,6 +757,7 @@ Deno.serve(async (req) => {
         const payload = frame.media?.payload;
         if (!payload) break;
         telnyxMediaCount++;
+        lastTelnyxMediaAt = new Date().toISOString();
         if (!firstCallerAudioLogged) {
           firstCallerAudioLogged = true;
           try {
@@ -732,6 +776,7 @@ Deno.serve(async (req) => {
           let sum = 0;
           for (let i = 0; i < pcm.length; i++) sum += Math.abs(pcm[i]);
           inboundEnergy = Math.round(sum / pcm.length);
+          lastInboundEnergy = inboundEnergy;
           if (telnyxMediaCount % 100 === 0) {
             console.log(`[bridge ${conversationId}] inbound energy frame#${telnyxMediaCount} avg|sample|=${inboundEnergy} (silence ~0, speech >500)`);
           }
@@ -753,34 +798,45 @@ Deno.serve(async (req) => {
         }
 
         const muted = Date.now() < agentSpeakingUntil;
-        if (!muted && typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD) {
-          inboundSpeechFrameCount++;
-          if (!firstInboundSpeechAt) firstInboundSpeechAt = new Date().toISOString();
-          lastForwardedSpeechAt = Date.now();
-        }
+        const callerSpeechDetected = typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD;
+        const preConfirmationBargeIn = typeof inboundEnergy === "number" && inboundEnergy >= BARGE_IN_SPEECH_THRESHOLD;
         if (muted) {
           const firstOpenerLocked = !firstUserTranscriptSeen &&
             firstAgentAudioSentAt !== null &&
             Date.now() - firstAgentAudioSentAt < FIRST_OPENER_BARGE_IN_LOCK_MS;
-          const callerIsBargingIn = typeof inboundEnergy === "number" && inboundEnergy >= BARGE_IN_SPEECH_THRESHOLD;
           if (firstOpenerLocked) {
+            droppedOpenerFrames++;
             if (telnyxMediaCount % 100 === 0) {
-              console.log(`[bridge ${conversationId}] opener-gate: ignoring inbound energy while first opener is playing`);
+              console.log(`[bridge ${conversationId}] opener-gate: ignoring inbound energy while first opener is playing energy=${inboundEnergy ?? "-"}`);
             }
             break;
           }
-          if (callerIsBargingIn) {
+          if (firstUserTranscriptSeen) {
+            if (callerSpeechDetected) {
+              agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
+              if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
+                telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
+              }
+              console.log(`[bridge ${conversationId}] post-confirmation speech while agent speaking: clear + forward energy=${inboundEnergy}`);
+            }
+          } else if (preConfirmationBargeIn) {
             agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
             if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
               telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
             }
-            console.log(`[bridge ${conversationId}] barge-in: clearing agent audio and forwarding caller speech`);
+            console.log(`[bridge ${conversationId}] barge-in: clearing agent audio and forwarding caller speech energy=${inboundEnergy}`);
           } else {
+            droppedEchoFrames++;
             if (telnyxMediaCount % 250 === 0) {
-              console.log(`[bridge ${conversationId}] echo-gate: dropping inbound silence/noise while agent speaking`);
+              console.log(`[bridge ${conversationId}] echo-gate: dropping inbound silence/noise while agent speaking energy=${inboundEnergy ?? "-"}`);
             }
             break;
           }
+        }
+        if (callerSpeechDetected) {
+          inboundSpeechFrameCount++;
+          if (!firstInboundSpeechAt) firstInboundSpeechAt = new Date().toISOString();
+          lastForwardedSpeechAt = Date.now();
         }
         if (elReady && elSocket?.readyState === WebSocket.OPEN) {
           sendUserAudioToEL(payload);

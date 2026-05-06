@@ -71,13 +71,27 @@ export type Database = {
       conversations: {
         Row: {
           agent_id: string | null
+          bridge_close_reason: string | null
+          bridge_dropped_echo_frames: number
+          bridge_dropped_opener_frames: number
+          bridge_forwarded_audio_after_agent_response_frames: number
+          bridge_forwarded_audio_frames: number
+          bridge_last_inbound_energy: number | null
+          bridge_last_vad_score: number | null
           caller_phone: string | null
           created_at: string
           direction: string
+          el_close_code: number | null
+          el_close_reason: string | null
+          el_was_clean: boolean | null
           ended_at: string | null
           first_inbound_speech_at: string | null
           id: string
           inbound_speech_frame_count: number
+          last_agent_audio_at: string | null
+          last_caller_audio_forwarded_at: string | null
+          last_el_vad_at: string | null
+          last_telnyx_media_at: string | null
           media_frame_count: number
           started_at: string
           telnyx_answered_at: string | null
@@ -93,13 +107,27 @@ export type Database = {
         }
         Insert: {
           agent_id?: string | null
+          bridge_close_reason?: string | null
+          bridge_dropped_echo_frames?: number
+          bridge_dropped_opener_frames?: number
+          bridge_forwarded_audio_after_agent_response_frames?: number
+          bridge_forwarded_audio_frames?: number
+          bridge_last_inbound_energy?: number | null
+          bridge_last_vad_score?: number | null
           caller_phone?: string | null
           created_at?: string
           direction?: string
+          el_close_code?: number | null
+          el_close_reason?: string | null
+          el_was_clean?: boolean | null
           ended_at?: string | null
           first_inbound_speech_at?: string | null
           id?: string
           inbound_speech_frame_count?: number
+          last_agent_audio_at?: string | null
+          last_caller_audio_forwarded_at?: string | null
+          last_el_vad_at?: string | null
+          last_telnyx_media_at?: string | null
           media_frame_count?: number
           started_at?: string
           telnyx_answered_at?: string | null
@@ -115,13 +143,27 @@ export type Database = {
         }
         Update: {
           agent_id?: string | null
+          bridge_close_reason?: string | null
+          bridge_dropped_echo_frames?: number
+          bridge_dropped_opener_frames?: number
+          bridge_forwarded_audio_after_agent_response_frames?: number
+          bridge_forwarded_audio_frames?: number
+          bridge_last_inbound_energy?: number | null
+          bridge_last_vad_score?: number | null
           caller_phone?: string | null
           created_at?: string
           direction?: string
+          el_close_code?: number | null
+          el_close_reason?: string | null
+          el_was_clean?: boolean | null
           ended_at?: string | null
           first_inbound_speech_at?: string | null
           id?: string
           inbound_speech_frame_count?: number
+          last_agent_audio_at?: string | null
+          last_caller_audio_forwarded_at?: string | null
+          last_el_vad_at?: string | null
+          last_telnyx_media_at?: string | null
           media_frame_count?: number
           started_at?: string
           telnyx_answered_at?: string | null
