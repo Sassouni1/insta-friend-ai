@@ -171,6 +171,7 @@ serve(async (req) => {
     tenant: phoneRow.tenant_id,
     caller: fromNumber,
     bot: answerBot,
+    direction: conversationDirection,
   });
   if (answerBot === "chris") streamParams.set("name", "Chris");
   if (tenantRow?.name) streamParams.set("company", tenantRow.name);
