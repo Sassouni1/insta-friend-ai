@@ -17,7 +17,8 @@ const SAM_AGENT_NAME = "Sam - Hair Systems";
 const SAM_OUTBOUND_AGENT_NAME = "Sam - Hair Systems Outbound";
 const CHRIS_AGENT_NAME = "Chris - Practice Caller";
 const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
-const SAM_VOICE_ID = "f5HLTX707KIM4SzJYzSz";
+const SAM_VOICE_ID = "oqnGPLczFm7QLPdseXmp";
+const SAM_BACKGROUND_NOISE_RATIO = 0;
 
 const DEFAULT_CHRIS_SCRIPT = `You are Chris, a realistic practice lead calling about hair systems.
 
@@ -464,23 +465,38 @@ Deno.serve(async (req) => {
 
   function transformELAudioForTelnyx(audioB64: string): string {
     const sourceFormat = elAgentOutputAudioFormat || "pcm_16000";
-    if (isMulaw8000(sourceFormat)) return audioB64;
+    if (isMulaw8000(sourceFormat)) {
+      const pcm8 = mulawToPcm16(base64ToUint8(audioB64));
+      return uint8ToBase64(pcm16ToMulaw(addSamBackgroundNoise(pcm8)));
+    }
 
     if (isPcm8000(sourceFormat)) {
       const pcm8 = base64ToInt16(audioB64);
-      return uint8ToBase64(pcm16ToMulaw(pcm8));
+      return uint8ToBase64(pcm16ToMulaw(addSamBackgroundNoise(pcm8)));
     }
 
     if (isPcm16000(sourceFormat)) {
       const pcm16 = base64ToInt16(audioB64);
       const pcm8 = downsample16to8(pcm16);
-      return uint8ToBase64(pcm16ToMulaw(pcm8));
+      return uint8ToBase64(pcm16ToMulaw(addSamBackgroundNoise(pcm8)));
     }
 
     console.warn(`[bridge ${conversationId}] unknown EL output format ${sourceFormat}, defaulting EL→Telnyx to pcm_16000 -> PCMU`);
     const pcm16 = base64ToInt16(audioB64);
     const pcm8 = downsample16to8(pcm16);
-    return uint8ToBase64(pcm16ToMulaw(pcm8));
+    return uint8ToBase64(pcm16ToMulaw(addSamBackgroundNoise(pcm8)));
+  }
+
+  function addSamBackgroundNoise(pcm: Int16Array): Int16Array {
+    if (botKind !== "sam" || SAM_BACKGROUND_NOISE_RATIO <= 0) return pcm;
+    const out = new Int16Array(pcm.length);
+    const amplitude = Math.round(32767 * SAM_BACKGROUND_NOISE_RATIO);
+    for (let i = 0; i < pcm.length; i++) {
+      const white = Math.random() * 2 - 1;
+      const sample = pcm[i] + Math.round(white * amplitude);
+      out[i] = Math.max(-32768, Math.min(32767, sample));
+    }
+    return out;
   }
 
   function sendUserAudioToEL(mulawB64: string) {
