@@ -7,7 +7,7 @@ const corsHeaders = {
 };
 
 const AGENT_NAME = "Sam - Hair Systems";
-const PREFERRED_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0"; // Mark - Natural Conversations
+const PREFERRED_VOICE_ID = "f5HLTX707KIM4SzJYzSz";
 const FALLBACK_VOICE_ID = "iP95p4xoKVk53GoZ742B"; // Chris (known-good default)
 
 const SAM_SCRIPT = `You are Sam, the voice appointment setter for {{company_name}}.
