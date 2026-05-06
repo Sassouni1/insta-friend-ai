@@ -304,6 +304,7 @@ Deno.serve(async (req) => {
   let elConnecting = false;
   let telnyxStreamId: string | null = null;
   let elReady = false;
+  let elSessionEverReady = false;
   let elUserInputAudioFormat: string | null = null;
   let elAgentOutputAudioFormat: string | null = null;
   let firstCallerAudioLogged = false;
@@ -320,14 +321,17 @@ Deno.serve(async (req) => {
   let inboundSpeechFrameCount = 0;
   let firstInboundSpeechAt: string | null = null;
   let bridgeClosed = false;
+  let telnyxStartAt: number | null = null;
+  let elStartTimer: number | null = null;
   let agentSpeakingUntil = 0;
   let lastForwardedSpeechAt = 0;
   const AGENT_SPEAK_TAIL_MS = 600;
   const INTERRUPTION_CLEAR_TAIL_MS = 150;
   const RECENT_SPEECH_WINDOW_MS = 1200;
   const INBOUND_SPEECH_THRESHOLD = 180;
-  const BARGE_IN_SPEECH_THRESHOLD = 650;
+  const BARGE_IN_SPEECH_THRESHOLD = 1200;
   const FIRST_OPENER_BARGE_IN_LOCK_MS = 4500;
+  const OUTBOUND_FIRST_SPEAK_DELAY_MS = 2500;
   const pendingTelnyxAudio: string[] = [];
   let firstAgentAudioSentAt: number | null = null;
 
@@ -346,6 +350,7 @@ Deno.serve(async (req) => {
     bridgeClosed = true;
     console.log(`[bridge ${conversationId}] closing: ${reason}`);
     clearTimeout(startTimer);
+    if (elStartTimer !== null) clearTimeout(elStartTimer);
     try {
       if (telnyxSocket.readyState < 2) telnyxSocket.close();
     } catch {}
@@ -506,6 +511,7 @@ Deno.serve(async (req) => {
           elUserInputAudioFormat = meta.user_input_audio_format || null;
           elAgentOutputAudioFormat = meta.agent_output_audio_format || null;
           elReady = true;
+          elSessionEverReady = true;
           console.log(`[bridge ${conversationId}] EL META: ${JSON.stringify(msg).slice(0, 800)}`);
           console.log(
             `[bridge ${conversationId}] EL ready — negotiated in=${elUserInputAudioFormat || "unknown"} out=${elAgentOutputAudioFormat || "unknown"}; flushing ${pendingTelnyxAudio.length} buffered frames`,
@@ -646,7 +652,31 @@ Deno.serve(async (req) => {
       console.error(
         `[bridge ${conversationId}] EL closed code=${ev.code} reason="${ev.reason}" wasClean=${ev.wasClean} ready=${wasReady} startSeen=${startSeen} mediaFrames=${telnyxMediaCount}`,
       );
+      if (wasReady && !bridgeClosed) {
+        closeBoth("ElevenLabs closed after session started");
+      }
     };
+  }
+
+  function scheduleElSocketStart(reason: string) {
+    if (bridgeClosed || elSocket || elConnecting) return;
+
+    if (samRoute === "outbound" && !elSessionEverReady) {
+      const startFrom = telnyxStartAt || Date.now();
+      const waitMs = Math.max(0, startFrom + OUTBOUND_FIRST_SPEAK_DELAY_MS - Date.now());
+      if (waitMs > 0) {
+        if (elStartTimer === null) {
+          console.log(`[bridge ${conversationId}] delaying first outbound agent audio ${waitMs}ms (${reason})`);
+          elStartTimer = setTimeout(() => {
+            elStartTimer = null;
+            initElSocket();
+          }, waitMs) as unknown as number;
+        }
+        return;
+      }
+    }
+
+    initElSocket();
   }
 
   telnyxSocket.onopen = () => console.log(`[bridge ${conversationId}] Telnyx WS open`);
@@ -674,9 +704,10 @@ Deno.serve(async (req) => {
       case "start":
         startSeen = true;
         clearTimeout(startTimer);
+        telnyxStartAt = Date.now();
         telnyxStreamId = frame.stream_id || frame.start?.stream_id;
         console.log(`[bridge ${conversationId}] Telnyx START stream_id=${telnyxStreamId} payload=${JSON.stringify(frame).slice(0, 400)}`);
-        initElSocket();
+        scheduleElSocketStart("telnyx start");
         break;
 
       case "media": {
@@ -709,7 +740,17 @@ Deno.serve(async (req) => {
         if (telnyxMediaCount % 250 === 0) {
           console.log(`[bridge ${conversationId}] Telnyx media frames: ${telnyxMediaCount}`);
         }
-        if (!elSocket && !elConnecting) initElSocket();
+        if (!elSocket && !elConnecting) {
+          if (elSessionEverReady) {
+            closeBoth("ElevenLabs session ended; refusing mid-call restart");
+            break;
+          }
+          const firstOutboundDelayActive = samRoute === "outbound" &&
+            telnyxStartAt !== null &&
+            Date.now() - telnyxStartAt < OUTBOUND_FIRST_SPEAK_DELAY_MS;
+          scheduleElSocketStart("first media");
+          if (firstOutboundDelayActive) break;
+        }
 
         const muted = Date.now() < agentSpeakingUntil;
         if (!muted && typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD) {
