@@ -63,6 +63,7 @@ export async function placeDial(opts: {
     conv: convRow.id,
     tenant: tenantId,
     caller: leadPhone,
+    direction: "outbound",
   });
   if (leadName) params.set("name", leadName);
   if (leadEmail) params.set("email", leadEmail);
@@ -182,12 +183,65 @@ async function wasAnswered(supabase: SupabaseAny, conversationId: string): Promi
   return false;
 }
 
-export async function fireCall(scheduledId: string, logTag = "dial") {
+async function maybeRetryCall(
+  supabase: SupabaseAny,
+  scheduledId: string,
+  claimed: { tenant_id: string; lead_phone: string; lead_name: string | null; lead_email: string | null },
+  firstConversationId: string,
+  logTag: string,
+) {
+  await new Promise((r) => setTimeout(r, RETRY_WAIT_MS));
+
+  const { data: current } = await supabase
+    .from("scheduled_calls")
+    .select("status, attempts, conversation_id")
+    .eq("id", scheduledId)
+    .maybeSingle();
+
+  if (!current || current.status !== "dialed" || current.conversation_id !== firstConversationId || Number(current.attempts || 0) >= 2) {
+    console.log(`[${logTag}] retry skipped for ${scheduledId}; row changed`);
+    return;
+  }
+
+  if (await wasAnswered(supabase, firstConversationId)) {
+    console.log(`[${logTag}] ${claimed.lead_phone} answered on attempt 1`);
+    return;
+  }
+
+  console.log(`[${logTag}] ${claimed.lead_phone} no human speech detected on attempt 1; retrying`);
+
+  const second = await placeDial({
+    supabase,
+    tenantId: claimed.tenant_id,
+    leadPhone: claimed.lead_phone,
+    leadName: claimed.lead_name,
+    leadEmail: claimed.lead_email,
+  });
+
+  await supabase
+    .from("scheduled_calls")
+    .update({
+      status: "dialed",
+      conversation_id: second.conversationId,
+      attempts: 2,
+      last_error: null,
+    })
+    .eq("id", scheduledId)
+    .eq("conversation_id", firstConversationId);
+
+  console.log(`[${logTag}] dialed ${claimed.lead_phone} for ${scheduledId} (attempt 2)`);
+}
+
+export async function fireCall(scheduledId: string, logTag = "dial"): Promise<{
+  status: "dialed" | "failed" | "skipped";
+  conversationId?: string;
+  error?: string;
+}> {
   const supabase: SupabaseAny = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
   const { data: claimed } = await supabase
     .from("scheduled_calls")
-    .update({ status: "processing", attempts: 1 })
+    .update({ status: "dialing", attempts: 1, last_error: null })
     .eq("id", scheduledId)
     .eq("status", "pending")
     .select("id, tenant_id, lead_phone, lead_name, lead_email")
@@ -195,7 +249,7 @@ export async function fireCall(scheduledId: string, logTag = "dial") {
 
   if (!claimed) {
     console.log(`[${logTag}] call ${scheduledId} already processed or cancelled`);
-    return;
+    return { status: "skipped" };
   }
 
   try {
@@ -214,34 +268,8 @@ export async function fireCall(scheduledId: string, logTag = "dial") {
 
     console.log(`[${logTag}] dialed ${claimed.lead_phone} for ${scheduledId} (attempt 1)`);
 
-    await new Promise((r) => setTimeout(r, RETRY_WAIT_MS));
-
-    if (await wasAnswered(supabase, first.conversationId)) {
-      console.log(`[${logTag}] ${claimed.lead_phone} answered on attempt 1`);
-      return;
-    }
-
-    console.log(`[${logTag}] ${claimed.lead_phone} no human speech detected on attempt 1 — retrying`);
-
-    const second = await placeDial({
-      supabase,
-      tenantId: claimed.tenant_id,
-      leadPhone: claimed.lead_phone,
-      leadName: claimed.lead_name,
-      leadEmail: claimed.lead_email,
-    });
-
-    await supabase
-      .from("scheduled_calls")
-      .update({
-        status: "dialed",
-        conversation_id: second.conversationId,
-        attempts: 2,
-        last_error: null,
-      })
-      .eq("id", scheduledId);
-
-    console.log(`[${logTag}] dialed ${claimed.lead_phone} for ${scheduledId} (attempt 2)`);
+    scheduleBackground(() => maybeRetryCall(supabase, scheduledId, claimed, first.conversationId, logTag));
+    return { status: "dialed", conversationId: first.conversationId };
   } catch (err: any) {
     const msg = err?.message || String(err);
     console.error(`[${logTag}] fire failed for ${scheduledId}:`, msg);
@@ -249,6 +277,7 @@ export async function fireCall(scheduledId: string, logTag = "dial") {
       .from("scheduled_calls")
       .update({ status: "failed", last_error: msg.slice(0, 500) })
       .eq("id", scheduledId);
+    return { status: "failed", error: msg.slice(0, 500) };
   }
 }
 
