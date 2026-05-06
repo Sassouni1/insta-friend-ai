@@ -17,7 +17,7 @@ const SAM_AGENT_NAME = "Sam - Hair Systems";
 const SAM_OUTBOUND_AGENT_NAME = "Sam - Hair Systems Outbound";
 const CHRIS_AGENT_NAME = "Chris - Practice Caller";
 const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
-const SAM_VOICE_ID = "oqnGPLczFm7QLPdseXmp";
+const SAM_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0";
 const SAM_BACKGROUND_NOISE_RATIO = 0;
 
 const DEFAULT_CHRIS_SCRIPT = `You are Chris, a realistic practice lead calling about hair systems.
@@ -111,9 +111,9 @@ function buildSamVoicePatchConfig() {
     tts: {
       model_id: "eleven_flash_v2",
       voice_id: SAM_VOICE_ID,
-      stability: 0.40,
+      stability: 0.72,
       similarity_boost: 0.75,
-      speed: 0.80,
+      speed: 0.95,
     },
   };
 }
