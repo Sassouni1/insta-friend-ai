@@ -77,6 +77,7 @@ serve(async (req) => {
       conv: convRow.id,
       tenant: tenant_id,
       caller: to_number,
+      direction: "outbound",
     });
     if (caller_name) params.set("name", caller_name);
     if (tenantRow?.name) params.set("company", tenantRow.name);

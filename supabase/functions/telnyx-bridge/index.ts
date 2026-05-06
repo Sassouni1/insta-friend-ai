@@ -14,9 +14,9 @@ import { telnyxCallControl } from "../_shared/telnyx.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const SAM_AGENT_NAME = "Sam - Hair Systems";
+const SAM_OUTBOUND_AGENT_NAME = "Sam - Hair Systems Outbound";
 const CHRIS_AGENT_NAME = "Chris - Practice Caller";
 const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
-const SAM_PHONE_UNKNOWN_FIRST_MESSAGE = "Hey — thanks for reaching out. Who am I speaking with?";
 
 const DEFAULT_CHRIS_SCRIPT = `You are Chris, a realistic practice lead calling about hair systems.
 
@@ -153,25 +153,41 @@ async function ensureAgentId(apiKey: string, name: string, conversationConfig?: 
   return agentId;
 }
 
+function getEnvFirst(...names: string[]): string | null {
+  for (const name of names) {
+    const value = Deno.env.get(name)?.trim();
+    if (value) return value;
+  }
+  return null;
+}
+
 async function getOrFetchAgentId(
   apiKey: string,
   botKind: string,
   script: string,
-  samVariant: "outbound" | "inbound" = "inbound",
+  samRoute: "inbound" | "outbound",
 ): Promise<string | null> {
   if (botKind === "chris") {
-    const envAgentId = Deno.env.get("PRACTICE_CHRIS_AGENT_ID")?.trim();
+    const envAgentId = getEnvFirst("PRACTICE_CHRIS_AGENT_ID");
     if (envAgentId) return envAgentId;
     return ensureAgentId(apiKey, CHRIS_AGENT_NAME, buildChrisConversationConfig(script));
   }
 
-  // Sam: prefer variant-specific agent (outbound vs inbound), fall back to generic.
-  const variantEnv = samVariant === "outbound"
-    ? Deno.env.get("SAM_OUTBOUND_AGENT_ID")?.trim()
-    : Deno.env.get("SAM_INBOUND_AGENT_ID")?.trim();
-  if (variantEnv) return variantEnv;
+  if (samRoute === "outbound") {
+    const outboundAgentId = getEnvFirst(
+      "ELEVENLABS_OUTBOUND_AGENT_ID",
+      "ELEVENLABS_AGENT_ID_OUTBOUND",
+      "SAM_OUTBOUND_AGENT_ID",
+    );
+    if (outboundAgentId) return outboundAgentId;
 
-  const envAgentId = Deno.env.get("ELEVENLABS_AGENT_ID")?.trim();
+    const outboundAgent = await ensureAgentId(apiKey, SAM_OUTBOUND_AGENT_NAME);
+    if (outboundAgent) return outboundAgent;
+
+    console.warn(`[bridge] outbound Sam agent "${SAM_OUTBOUND_AGENT_NAME}" not found; falling back to inbound Sam agent`);
+  }
+
+  const envAgentId = getEnvFirst("ELEVENLABS_INBOUND_AGENT_ID", "ELEVENLABS_AGENT_ID");
   if (envAgentId) return envAgentId;
 
   try {
@@ -208,6 +224,7 @@ Deno.serve(async (req) => {
   const companyName = url.searchParams.get("company") || "";
   const tenantTimezone = url.searchParams.get("tz") || "";
   const requestedBot = url.searchParams.get("bot") || "sam";
+  const requestedDirection = url.searchParams.get("direction") || "";
 
   if (!conversationId || !tenantId) {
     return new Response("missing conv or tenant", { status: 400 });
@@ -221,21 +238,18 @@ Deno.serve(async (req) => {
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const { data: conversationRow } = await supabase
     .from("conversations")
-    .select("agent_id, telnyx_event_payload, direction")
+    .select("agent_id, direction, telnyx_event_payload")
     .eq("id", conversationId)
     .maybeSingle();
   const metadata = (conversationRow?.telnyx_event_payload || {}) as Record<string, unknown>;
   const botKind = requestedBot === "chris" || conversationRow?.agent_id === "practice_chris" ? "chris" : "sam";
+  const callDirection = requestedDirection || conversationRow?.direction || "";
+  const samRoute = botKind === "sam" && callDirection === "outbound" && callerName.trim()
+    ? "outbound"
+    : "inbound";
   const practiceScript = typeof metadata.practice_script === "string" && metadata.practice_script.trim()
     ? metadata.practice_script
     : DEFAULT_CHRIS_SCRIPT;
-
-  // Sam variant: outbound when this is an outbound call AND we have a caller name.
-  // Inbound/web/unknown -> inbound agent (unknown-caller opener).
-  const samVariant: "outbound" | "inbound" =
-    conversationRow?.direction === "outbound" && callerName.trim().length > 0
-      ? "outbound"
-      : "inbound";
 
   let signedUrl = "";
   let agentId = "";
@@ -243,7 +257,7 @@ Deno.serve(async (req) => {
   let lastSignError = "";
 
   for (const keyInfo of elevenLabsKeys) {
-    const candidateAgentId = await getOrFetchAgentId(keyInfo.key, botKind, practiceScript, samVariant);
+    const candidateAgentId = await getOrFetchAgentId(keyInfo.key, botKind, practiceScript, samRoute);
     if (!candidateAgentId) {
       lastSignError = `${keyInfo.source}: agent not found`;
       console.warn(`[bridge ${conversationId}] ${lastSignError}`);
@@ -282,7 +296,7 @@ Deno.serve(async (req) => {
     return new Response(`ElevenLabs auth failed: ${lastSignError}`, { status: 500 });
   }
 
-  console.log(`[bridge ${conversationId}] using ElevenLabs ${elevenLabsKeySource} key agent=${agentId} samVariant=${samVariant}`);
+  console.log(`[bridge ${conversationId}] using ElevenLabs ${elevenLabsKeySource} key agent=${agentId} route=${botKind}:${samRoute}`);
 
   const { socket: telnyxSocket, response } = Deno.upgradeWebSocket(req);
 
@@ -317,7 +331,7 @@ Deno.serve(async (req) => {
   const pendingTelnyxAudio: string[] = [];
   let firstAgentAudioSentAt: number | null = null;
 
-  console.log(`[bridge ${conversationId}] params bot=${botKind} tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
+  console.log(`[bridge ${conversationId}] params bot=${botKind} direction=${callDirection || "-"} route=${samRoute} tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
 
   let connectedAt: number | null = null;
   let startSeen = false;
@@ -443,10 +457,6 @@ Deno.serve(async (req) => {
       elConnecting = false;
       console.log(`[bridge ${conversationId}] EL open — requesting pcm_16000 both directions`);
       const firstName = callerName.trim().split(/\s+/)[0] || "";
-      // NOTE: agent.first_message override removed — EL agent does not allow it
-      // and was closing the WebSocket with code=1008. Personalization now relies
-      // on dynamic_variables.first_name being substituted in the agent's saved
-      // first_message / prompt.
       const conversationConfigOverride: Record<string, unknown> = {
         asr: { user_input_audio_format: "pcm_16000" },
         tts: { agent_output_audio_format: "pcm_16000" },
