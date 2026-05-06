@@ -331,6 +331,12 @@ Deno.serve(async (req) => {
   let droppedEchoFrames = 0;
   let forwardedAudioFrames = 0;
   let forwardedAudioAfterAgentResponseFrames = 0;
+  let elAudioChunksReceived = 0;
+  let telnyxAgentAudioChunksSent = 0;
+  let agentAudioGapCount = 0;
+  let maxAgentAudioGapMs = 0;
+  let lastElAudioChunkAtMs: number | null = null;
+  let telnyxClearCount = 0;
   let lastInboundEnergy: number | null = null;
   let lastVadScore: number | null = null;
   let bridgeClosed = false;
@@ -390,6 +396,11 @@ Deno.serve(async (req) => {
         bridge_dropped_echo_frames: droppedEchoFrames,
         bridge_forwarded_audio_frames: forwardedAudioFrames,
         bridge_forwarded_audio_after_agent_response_frames: forwardedAudioAfterAgentResponseFrames,
+        bridge_el_audio_chunks_received: elAudioChunksReceived,
+        bridge_telnyx_agent_audio_chunks_sent: telnyxAgentAudioChunksSent,
+        bridge_agent_audio_gap_count: agentAudioGapCount,
+        bridge_max_agent_audio_gap_ms: maxAgentAudioGapMs,
+        bridge_telnyx_clear_count: telnyxClearCount,
         bridge_last_inbound_energy: lastInboundEnergy,
         bridge_last_vad_score: lastVadScore,
       })
@@ -557,6 +568,17 @@ Deno.serve(async (req) => {
         case "audio": {
           const b64 = msg.audio_event?.audio_base_64;
           if (!b64) break;
+          const now = Date.now();
+          elAudioChunksReceived++;
+          if (lastElAudioChunkAtMs !== null) {
+            const gapMs = now - lastElAudioChunkAtMs;
+            maxAgentAudioGapMs = Math.max(maxAgentAudioGapMs, gapMs);
+            if (gapMs > 1200) {
+              agentAudioGapCount++;
+              console.warn(`[bridge ${conversationId}] EL agent audio gap ${gapMs}ms before chunk #${elAudioChunksReceived}`);
+            }
+          }
+          lastElAudioChunkAtMs = now;
           if (suppressAgentAudioUntilUser && !firstUserTranscriptSeen) {
             break;
           }
@@ -575,6 +597,7 @@ Deno.serve(async (req) => {
           const telnyxPayload = transformELAudioForTelnyx(b64);
           lastAgentAudioAt = new Date().toISOString();
           if (!firstAgentAudioSentAt) firstAgentAudioSentAt = Date.now();
+          telnyxAgentAudioChunksSent++;
           telnyxSocket.send(JSON.stringify({
             event: "media",
             stream_id: telnyxStreamId,
@@ -675,8 +698,9 @@ Deno.serve(async (req) => {
           }
 
           agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
-          if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
+          if (botKind === "chris" && telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
             telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
+            telnyxClearCount++;
           }
           break;
         }
@@ -814,17 +838,15 @@ Deno.serve(async (req) => {
           if (firstUserTranscriptSeen) {
             if (callerSpeechDetected) {
               agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
-              if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
-                telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
-              }
-              console.log(`[bridge ${conversationId}] post-confirmation speech while agent speaking: clear + forward energy=${inboundEnergy}`);
+              console.log(`[bridge ${conversationId}] post-confirmation speech while agent speaking: forwarding without Telnyx clear energy=${inboundEnergy}`);
             }
           } else if (preConfirmationBargeIn) {
             agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
-            if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
+            if (botKind === "chris" && telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
               telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
+              telnyxClearCount++;
             }
-            console.log(`[bridge ${conversationId}] barge-in: clearing agent audio and forwarding caller speech energy=${inboundEnergy}`);
+            console.log(`[bridge ${conversationId}] barge-in: forwarding caller speech energy=${inboundEnergy} clear=${botKind === "chris"}`);
           } else {
             droppedEchoFrames++;
             if (telnyxMediaCount % 250 === 0) {

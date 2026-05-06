@@ -71,13 +71,18 @@ export type Database = {
       conversations: {
         Row: {
           agent_id: string | null
+          bridge_agent_audio_gap_count: number
           bridge_close_reason: string | null
           bridge_dropped_echo_frames: number
           bridge_dropped_opener_frames: number
+          bridge_el_audio_chunks_received: number
           bridge_forwarded_audio_after_agent_response_frames: number
           bridge_forwarded_audio_frames: number
           bridge_last_inbound_energy: number | null
           bridge_last_vad_score: number | null
+          bridge_max_agent_audio_gap_ms: number
+          bridge_telnyx_agent_audio_chunks_sent: number
+          bridge_telnyx_clear_count: number
           caller_phone: string | null
           created_at: string
           direction: string
@@ -107,13 +112,18 @@ export type Database = {
         }
         Insert: {
           agent_id?: string | null
+          bridge_agent_audio_gap_count?: number
           bridge_close_reason?: string | null
           bridge_dropped_echo_frames?: number
           bridge_dropped_opener_frames?: number
+          bridge_el_audio_chunks_received?: number
           bridge_forwarded_audio_after_agent_response_frames?: number
           bridge_forwarded_audio_frames?: number
           bridge_last_inbound_energy?: number | null
           bridge_last_vad_score?: number | null
+          bridge_max_agent_audio_gap_ms?: number
+          bridge_telnyx_agent_audio_chunks_sent?: number
+          bridge_telnyx_clear_count?: number
           caller_phone?: string | null
           created_at?: string
           direction?: string
@@ -143,13 +153,18 @@ export type Database = {
         }
         Update: {
           agent_id?: string | null
+          bridge_agent_audio_gap_count?: number
           bridge_close_reason?: string | null
           bridge_dropped_echo_frames?: number
           bridge_dropped_opener_frames?: number
+          bridge_el_audio_chunks_received?: number
           bridge_forwarded_audio_after_agent_response_frames?: number
           bridge_forwarded_audio_frames?: number
           bridge_last_inbound_energy?: number | null
           bridge_last_vad_score?: number | null
+          bridge_max_agent_audio_gap_ms?: number
+          bridge_telnyx_agent_audio_chunks_sent?: number
+          bridge_telnyx_clear_count?: number
           caller_phone?: string | null
           created_at?: string
           direction?: string
