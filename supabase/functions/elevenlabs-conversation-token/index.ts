@@ -7,7 +7,7 @@ const corsHeaders = {
 };
 
 const AGENT_NAME = "Sam - Hair Systems";
-const PREFERRED_VOICE_ID = "oqnGPLczFm7QLPdseXmp";
+const PREFERRED_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0"; // Mark - Natural Conversations
 const FALLBACK_VOICE_ID = "iP95p4xoKVk53GoZ742B"; // Chris (known-good default)
 
 const SAM_SCRIPT = `You are Sam, the voice appointment setter for {{company_name}}.
@@ -200,9 +200,9 @@ const SAM_CONVERSATION_CONFIG = {
   tts: {
     model_id: "eleven_flash_v2",
     voice_id: FALLBACK_VOICE_ID,
-    stability: 0.40,
+    stability: 0.72,
     similarity_boost: 0.75,
-    speed: 0.80,
+    speed: 0.95,
   },
 };
 
