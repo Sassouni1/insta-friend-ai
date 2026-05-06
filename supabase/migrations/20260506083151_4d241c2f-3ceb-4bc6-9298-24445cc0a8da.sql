@@ -1,0 +1,15 @@
+ALTER TABLE public.conversations
+  ADD COLUMN IF NOT EXISTS bridge_close_reason text,
+  ADD COLUMN IF NOT EXISTS el_close_code integer,
+  ADD COLUMN IF NOT EXISTS el_close_reason text,
+  ADD COLUMN IF NOT EXISTS el_was_clean boolean,
+  ADD COLUMN IF NOT EXISTS last_telnyx_media_at timestamp with time zone,
+  ADD COLUMN IF NOT EXISTS last_caller_audio_forwarded_at timestamp with time zone,
+  ADD COLUMN IF NOT EXISTS last_el_vad_at timestamp with time zone,
+  ADD COLUMN IF NOT EXISTS last_agent_audio_at timestamp with time zone,
+  ADD COLUMN IF NOT EXISTS bridge_dropped_opener_frames integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS bridge_dropped_echo_frames integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS bridge_forwarded_audio_frames integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS bridge_forwarded_audio_after_agent_response_frames integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS bridge_last_inbound_energy integer,
+  ADD COLUMN IF NOT EXISTS bridge_last_vad_score double precision;
