@@ -17,6 +17,7 @@ const SAM_AGENT_NAME = "Sam - Hair Systems";
 const SAM_OUTBOUND_AGENT_NAME = "Sam - Hair Systems Outbound";
 const CHRIS_AGENT_NAME = "Chris - Practice Caller";
 const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
+const SAM_VOICE_ID = "f5HLTX707KIM4SzJYzSz";
 
 const DEFAULT_CHRIS_SCRIPT = `You are Chris, a realistic practice lead calling about hair systems.
 
@@ -104,6 +105,18 @@ function buildChrisConversationConfig(script: string) {
   };
 }
 
+function buildSamVoicePatchConfig() {
+  return {
+    tts: {
+      model_id: "eleven_flash_v2",
+      voice_id: SAM_VOICE_ID,
+      stability: 0.72,
+      similarity_boost: 0.75,
+      speed: 0.95,
+    },
+  };
+}
+
 async function elevenLabsJson(
   url: string,
   options: RequestInit,
@@ -181,7 +194,7 @@ async function getOrFetchAgentId(
     );
     if (outboundAgentId) return outboundAgentId;
 
-    const outboundAgent = await ensureAgentId(apiKey, SAM_OUTBOUND_AGENT_NAME);
+    const outboundAgent = await ensureAgentId(apiKey, SAM_OUTBOUND_AGENT_NAME, buildSamVoicePatchConfig());
     if (outboundAgent) return outboundAgent;
 
     console.warn(`[bridge] outbound Sam agent "${SAM_OUTBOUND_AGENT_NAME}" not found; falling back to inbound Sam agent`);
