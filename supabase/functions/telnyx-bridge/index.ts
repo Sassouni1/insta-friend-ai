@@ -111,9 +111,9 @@ function buildSamVoicePatchConfig() {
     tts: {
       model_id: "eleven_flash_v2",
       voice_id: SAM_VOICE_ID,
-      stability: 0.72,
+      stability: 0.40,
       similarity_boost: 0.75,
-      speed: 0.95,
+      speed: 0.80,
     },
   };
 }
