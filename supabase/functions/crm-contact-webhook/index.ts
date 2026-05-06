@@ -11,19 +11,17 @@
 //   3. Use that tenant's OAuth token to check if contact already has any
 //      appointment in any calendar. If yes → skip.
 //   4. Dedupe against scheduled_calls in the last 24h.
-//   5. Schedule a delayed dial; pass tenant.name (sub-account) + contact name
+//   5. Place the dial immediately; pass tenant.name (sub-account) + contact name
 //      to the bridge so Sam greets them properly.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { corsHeaders, jsonResponse } from "../_shared/cors.ts";
 import { GhlClient, getFreshGhlToken } from "../_shared/ghl.ts";
-import { fireCall, scheduleBackground } from "../_shared/dialer.ts";
+import { fireCall } from "../_shared/dialer.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-
-const DEFAULT_DELAY_SECONDS = 120;
 
 // GHL's published Ed25519 public key for X-GHL-Signature.
 const GHL_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
@@ -217,7 +215,7 @@ serve(async (req) => {
     return jsonResponse({ ok: true, deduped: existing.id });
   }
 
-  const fireAt = new Date(Date.now() + DEFAULT_DELAY_SECONDS * 1000).toISOString();
+  const fireAt = new Date().toISOString();
 
   const { data: row, error: insErr } = await supabase
     .from("scheduled_calls")
@@ -237,17 +235,16 @@ serve(async (req) => {
     return jsonResponse({ ok: false, error: "scheduling failed" }, 200); // 200 so GHL doesn't 5xx-retry storm
   }
 
-  console.log(`[ghl-webhook] scheduled ${row.id} (${tenant.name} → ${name || phone}) firing in ${DEFAULT_DELAY_SECONDS}s`);
-
-  scheduleBackground(async () => {
-    await new Promise((r) => setTimeout(r, DEFAULT_DELAY_SECONDS * 1000));
-    await fireCall(row.id, "ghl-webhook");
-  });
+  console.log(`[ghl-webhook] scheduled ${row.id} (${tenant.name} -> ${name || phone}); dialing now`);
+  const call = await fireCall(row.id, "ghl-webhook");
 
   return jsonResponse({
     ok: true,
     scheduled_id: row.id,
     fire_at: row.fire_at,
+    call_status: call.status,
+    conversation_id: call.conversationId ?? null,
+    call_error: call.error ?? null,
     tenant: tenant.name,
   });
 });

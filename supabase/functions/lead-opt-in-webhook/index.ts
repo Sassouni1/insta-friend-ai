@@ -1,12 +1,10 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { corsHeaders, jsonResponse } from "../_shared/cors.ts";
-import { fireCall, scheduleBackground } from "../_shared/dialer.ts";
+import { fireCall } from "../_shared/dialer.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-
-const DEFAULT_DELAY_SECONDS = 120;
 
 function pickPhone(body: any): string | null {
   const candidates = [body?.phone, body?.lead_phone, body?.contact?.phone, body?.full_phone];
@@ -52,7 +50,7 @@ serve(async (req) => {
   if (tenant.webhook_secret !== secret) return jsonResponse({ error: "invalid secret" }, 401);
   if (!tenant.active) return jsonResponse({ error: "tenant inactive" }, 403);
 
-  const delaySeconds = Number(body?.delay_seconds ?? DEFAULT_DELAY_SECONDS);
+  const delaySeconds = Math.max(0, Number(body?.delay_seconds ?? 0));
   const fireAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
 
   const { data: row, error: insErr } = await supabase
@@ -73,12 +71,20 @@ serve(async (req) => {
     return jsonResponse({ error: "scheduling failed" }, 500);
   }
 
-  console.log(`[opt-in] scheduled ${row.id} for ${phone}, firing in ${delaySeconds}s`);
+  let call: Awaited<ReturnType<typeof fireCall>> | null = null;
+  if (delaySeconds === 0) {
+    console.log(`[opt-in] scheduled ${row.id} for ${phone}; dialing now`);
+    call = await fireCall(row.id, "opt-in");
+  } else {
+    console.log(`[opt-in] scheduled ${row.id} for ${phone}, recovery worker will fire in ${delaySeconds}s`);
+  }
 
-  scheduleBackground(async () => {
-    await new Promise((r) => setTimeout(r, delaySeconds * 1000));
-    await fireCall(row.id, "opt-in");
+  return jsonResponse({
+    ok: true,
+    scheduled_id: row.id,
+    fire_at: row.fire_at,
+    call_status: call?.status ?? "pending",
+    conversation_id: call?.conversationId ?? null,
+    call_error: call?.error ?? null,
   });
-
-  return jsonResponse({ ok: true, scheduled_id: row.id, fire_at: row.fire_at });
 });
