@@ -230,7 +230,7 @@ function buildSamVoicePatchConfig(calendarToolId?: string | null) {
         prompt: SAM_OUTBOUND_PROMPT,
         ...(calendarToolId ? { tool_ids: [calendarToolId] } : {}),
       },
-      first_message: "Hey — is this {{first_name}}?",
+      first_message: "Hey — is this the person looking into hair systems?",
       language: "en",
     },
     turn: {
