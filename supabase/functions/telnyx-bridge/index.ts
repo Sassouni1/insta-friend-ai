@@ -19,6 +19,7 @@ const CHRIS_AGENT_NAME = "Chris - Practice Caller";
 const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
 const SAM_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0";
 const SAM_BACKGROUND_NOISE_RATIO = 0;
+const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
 
 const DEFAULT_CHRIS_SCRIPT = `You are Chris, a realistic practice lead calling about hair systems.
 
@@ -106,8 +107,107 @@ function buildChrisConversationConfig(script: string) {
   };
 }
 
-function buildSamVoicePatchConfig() {
+function buildCalendarToolConfig() {
   return {
+    type: "client",
+    name: CALENDAR_TOOL_NAME,
+    description:
+      "Check real GoHighLevel calendar availability and book a consultation appointment. Use action=availability before offering times. Use action=book only after the caller chooses an exact slot_iso.",
+    expects_response: true,
+    response_timeout_secs: 20,
+    disable_interruptions: true,
+    force_pre_tool_speech: true,
+    parameters: {
+      type: "object",
+      required: ["action"],
+      properties: {
+        action: {
+          type: "string",
+          enum: ["availability", "book"],
+          description: "Use availability to fetch real open slots; use book to create the appointment.",
+        },
+        days_ahead: {
+          type: "integer",
+          description: "For availability only. Number of days ahead to search. Default is 7.",
+        },
+        preference: {
+          type: "string",
+          description: "For availability only. Caller scheduling preference, such as morning, afternoon, later, next week, Tuesday, or after 2.",
+        },
+        timezone: {
+          type: "string",
+          description: "For availability only. Timezone to use for speaking and filtering slots, such as America/New_York.",
+        },
+        slot_iso: {
+          type: "string",
+          description: "For booking only. Exact ISO datetime chosen from a prior availability response.",
+        },
+        caller_name: {
+          type: "string",
+          description: "Caller name. Use the known caller_name dynamic variable when available.",
+        },
+        caller_phone: {
+          type: "string",
+          description: "Caller phone number. Use the known caller_phone dynamic variable.",
+        },
+        caller_email: {
+          type: "string",
+          description: "For booking. Caller email. If missing, ask the caller: Real quick, what's the best email to put on file?",
+        },
+      },
+    },
+  };
+}
+
+let cachedCalendarToolId: string | null = null;
+
+async function ensureCalendarToolId(apiKey: string): Promise<string | null> {
+  if (cachedCalendarToolId) return cachedCalendarToolId;
+
+  const headers = { "xi-api-key": apiKey, "Content-Type": "application/json" };
+  const list = await elevenLabsJson("https://api.elevenlabs.io/v1/convai/tools", { headers });
+  if (list.ok) {
+    const existing = (list.data?.tools || []).find((tool: any) => tool?.tool_config?.name === CALENDAR_TOOL_NAME);
+    if (existing?.id) {
+      cachedCalendarToolId = existing.id;
+      return cachedCalendarToolId;
+    }
+  } else {
+    console.warn(`[bridge] list tools failed ${list.status}: ${list.text.slice(0, 300)}`);
+  }
+
+  const created = await elevenLabsJson("https://api.elevenlabs.io/v1/convai/tools", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ tool_config: buildCalendarToolConfig() }),
+  });
+  if (!created.ok) {
+    console.warn(`[bridge] create ${CALENDAR_TOOL_NAME} failed ${created.status}: ${created.text.slice(0, 300)}`);
+    return null;
+  }
+
+  cachedCalendarToolId = created.data?.id || null;
+  return cachedCalendarToolId;
+}
+
+function buildSamVoicePatchConfig(calendarToolId?: string | null) {
+  return {
+    agent: calendarToolId ? {
+      prompt: {
+        tool_ids: [calendarToolId],
+      },
+    } : undefined,
+    conversation: {
+      client_events: [
+        "audio",
+        "interruption",
+        "agent_response",
+        "user_transcript",
+        "agent_response_correction",
+        "client_tool_call",
+        "agent_tool_response",
+      ],
+    },
     tts: {
       model_id: "eleven_flash_v2",
       voice_id: SAM_VOICE_ID,
@@ -167,6 +267,22 @@ async function ensureAgentId(apiKey: string, name: string, conversationConfig?: 
   return agentId;
 }
 
+async function patchAgentConfig(
+  apiKey: string,
+  agentId: string,
+  name: string,
+  conversationConfig: Record<string, unknown>,
+) {
+  const patched = await elevenLabsJson(`https://api.elevenlabs.io/v1/convai/agents/${agentId}`, {
+    method: "PATCH",
+    headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
+    body: JSON.stringify({ name, conversation_config: conversationConfig }),
+  });
+  if (!patched.ok) {
+    console.warn(`[bridge] patch ${name} ${agentId} failed ${patched.status}: ${patched.text.slice(0, 300)}`);
+  }
+}
+
 function getEnvFirst(...names: string[]): string | null {
   for (const name of names) {
     const value = Deno.env.get(name)?.trim();
@@ -188,14 +304,20 @@ async function getOrFetchAgentId(
   }
 
   if (samRoute === "outbound") {
+    const calendarToolId = await ensureCalendarToolId(apiKey);
+    if (!calendarToolId) console.warn(`[bridge] ${CALENDAR_TOOL_NAME} unavailable; outbound Sam may not be able to book`);
+    const samPatchConfig = buildSamVoicePatchConfig(calendarToolId);
     const outboundAgentId = getEnvFirst(
       "ELEVENLABS_OUTBOUND_AGENT_ID",
       "ELEVENLABS_AGENT_ID_OUTBOUND",
       "SAM_OUTBOUND_AGENT_ID",
     );
-    if (outboundAgentId) return outboundAgentId;
+    if (outboundAgentId) {
+      await patchAgentConfig(apiKey, outboundAgentId, SAM_OUTBOUND_AGENT_NAME, samPatchConfig);
+      return outboundAgentId;
+    }
 
-    const outboundAgent = await ensureAgentId(apiKey, SAM_OUTBOUND_AGENT_NAME, buildSamVoicePatchConfig());
+    const outboundAgent = await ensureAgentId(apiKey, SAM_OUTBOUND_AGENT_NAME, samPatchConfig);
     if (outboundAgent) return outboundAgent;
 
     console.warn(`[bridge] outbound Sam agent "${SAM_OUTBOUND_AGENT_NAME}" not found; falling back to inbound Sam agent`);
@@ -353,6 +475,8 @@ Deno.serve(async (req) => {
   let telnyxClearCount = 0;
   let lastInboundEnergy: number | null = null;
   let lastVadScore: number | null = null;
+  let calendarToolCallCount = 0;
+  let calendarToolErrorCount = 0;
   let bridgeClosed = false;
   let telnyxStartAt: number | null = null;
   let elStartTimer: number | null = null;
@@ -383,6 +507,9 @@ Deno.serve(async (req) => {
     if (bridgeClosed) return;
     bridgeClosed = true;
     console.log(`[bridge ${conversationId}] closing: ${reason}`);
+    console.log(
+      `[bridge ${conversationId}] calendar tool calls=${calendarToolCallCount} errors=${calendarToolErrorCount}`,
+    );
     clearTimeout(startTimer);
     if (elStartTimer !== null) clearTimeout(elStartTimer);
     try {
@@ -523,6 +650,41 @@ Deno.serve(async (req) => {
     }
   }
 
+  async function runCalendarTool(parameters: Record<string, unknown>) {
+    const action = typeof parameters.action === "string" ? parameters.action : "availability";
+    const body: Record<string, unknown> = {
+      ...parameters,
+      action,
+      tenant_id: typeof parameters.tenant_id === "string" ? parameters.tenant_id : tenantId,
+    };
+
+    if (action === "book") {
+      if (!body.conversation_id) body.conversation_id = conversationId;
+      if (!body.caller_name) body.caller_name = callerName || "Chris";
+      if (!body.caller_phone) body.caller_phone = callerPhone;
+      if (!body.caller_email && callerEmail) body.caller_email = callerEmail;
+    }
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/ghl-calendar-tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    let data: any = text;
+    try { data = JSON.parse(text); } catch {}
+
+    if (!res.ok || data?.ok === false) {
+      throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+    }
+
+    return data;
+  }
+
   function initElSocket() {
     if (bridgeClosed || elSocket || elConnecting) return;
 
@@ -545,6 +707,7 @@ Deno.serve(async (req) => {
             "agent_response",
             "user_transcript",
             "agent_response_correction",
+            "client_tool_call",
             "agent_tool_response",
             "vad_score",
             "ping",
@@ -693,6 +856,50 @@ Deno.serve(async (req) => {
             event_id: msg.ping_event?.event_id,
           }));
           break;
+
+        case "client_tool_call": {
+          const toolEvent = msg.client_tool_call || msg.client_tool_call_event || {};
+          const toolName = toolEvent.tool_name || toolEvent.name;
+          const toolCallId = toolEvent.tool_call_id || toolEvent.id;
+          const parameters = toolEvent.parameters || {};
+          calendarToolCallCount++;
+          console.log(
+            `[bridge ${conversationId}] client_tool_call name=${toolName} id=${toolCallId || "-"} params=${JSON.stringify(parameters).slice(0, 600)}`,
+          );
+
+          if (toolName !== CALENDAR_TOOL_NAME) {
+            calendarToolErrorCount++;
+            socket.send(JSON.stringify({
+              type: "client_tool_result",
+              tool_call_id: toolCallId,
+              result: `Unknown tool: ${toolName}`,
+              is_error: true,
+            }));
+            break;
+          }
+
+          try {
+            const result = await runCalendarTool(parameters);
+            socket.send(JSON.stringify({
+              type: "client_tool_result",
+              tool_call_id: toolCallId,
+              result: JSON.stringify(result),
+              is_error: false,
+            }));
+            console.log(`[bridge ${conversationId}] client_tool_result ok action=${parameters.action || "availability"}`);
+          } catch (err) {
+            calendarToolErrorCount++;
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[bridge ${conversationId}] client_tool_result error: ${message.slice(0, 600)}`);
+            socket.send(JSON.stringify({
+              type: "client_tool_result",
+              tool_call_id: toolCallId,
+              result: `Calendar tool failed: ${message.slice(0, 800)}`,
+              is_error: true,
+            }));
+          }
+          break;
+        }
 
         case "vad_score": {
           const score = msg.vad_score_event?.vad_score ?? msg.vad_score;

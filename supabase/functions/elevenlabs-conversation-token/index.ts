@@ -9,6 +9,7 @@ const corsHeaders = {
 const AGENT_NAME = "Sam - Hair Systems";
 const PREFERRED_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0"; // Mark - Natural Conversations
 const FALLBACK_VOICE_ID = "iP95p4xoKVk53GoZ742B"; // Chris (known-good default)
+const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
 
 const SAM_SCRIPT = `You are Sam, the voice appointment setter for {{company_name}}.
 
@@ -133,16 +134,20 @@ STAGE 10 — Real booking
 Goal: offer real appointment options from the calendar.
 For phone calls, live calendar slots may already be provided in {{live_calendar_slots}} by the Telnyx bridge.
 If {{live_calendar_slots}} contains options, use only those options.
-If no live slots are provided, call the availability tool using tenant_id={{tenant_id}}.
+If no live slots are provided, call the availability tool using tenant_id={{tenant_id}}, the caller's time preference, and the timezone you are using.
 Never invent availability or make up dates.
 Offer two concrete slots naturally, like:
 "I've got [Day] at [Time] or [Day] at [Time] — which works better?"
-If needed, ask follow-up and call the availability tool again.
+Remember the exact option numbers and slot_iso values returned by the tool.
+If the caller says "first one", "second one", a day name, a time, "the morning one", or similar, map that to the matching returned option.
+If the caller says "anything later", "next week", "not that day", "afternoon instead", or similar, call the availability tool again with that updated preference.
+If no slots match, ask for a different time window and call availability again.
 
 STAGE 11 — Confirm and book
 Goal: confirm details and book live.
 You already know their name, phone, and email from the opt-in context.
-Before booking, confirm naturally if needed.
+If caller_email is missing or empty, ask exactly: "Real quick, what's the best email to put on file?"
+Do not book until you have a usable email.
 Then call the booking tool with:
 - tenant_id={{tenant_id}}
 - conversation_id={{conversation_id}}
@@ -191,6 +196,8 @@ const SAM_CONVERSATION_CONFIG = {
       "agent_response",
       "user_transcript",
       "agent_response_correction",
+      "client_tool_call",
+      "agent_tool_response",
     ],
   },
   asr: {
@@ -283,6 +290,97 @@ async function elevenLabsOp(
   }
 }
 
+function buildCalendarToolConfig() {
+  return {
+    type: "client",
+    name: CALENDAR_TOOL_NAME,
+    description:
+      "Check real GoHighLevel calendar availability and book a consultation appointment. Use action=availability before offering times. Use action=book only after the caller chooses an exact slot_iso.",
+    expects_response: true,
+    response_timeout_secs: 20,
+    disable_interruptions: true,
+    force_pre_tool_speech: true,
+    parameters: {
+      type: "object",
+      required: ["action"],
+      properties: {
+        action: {
+          type: "string",
+          enum: ["availability", "book"],
+          description: "Use availability to fetch real open slots; use book to create the appointment.",
+        },
+        days_ahead: {
+          type: "integer",
+          description: "For availability only. Number of days ahead to search. Default is 7.",
+        },
+        preference: {
+          type: "string",
+          description: "For availability only. Caller scheduling preference, such as morning, afternoon, later, next week, Tuesday, or after 2.",
+        },
+        timezone: {
+          type: "string",
+          description: "For availability only. Timezone to use for speaking and filtering slots, such as America/New_York.",
+        },
+        slot_iso: {
+          type: "string",
+          description: "For booking only. Exact ISO datetime chosen from a prior availability response.",
+        },
+        caller_name: {
+          type: "string",
+          description: "Caller name. Use the known caller_name dynamic variable when available.",
+        },
+        caller_phone: {
+          type: "string",
+          description: "Caller phone number. Use the known caller_phone dynamic variable.",
+        },
+        caller_email: {
+          type: "string",
+          description: "For booking. Caller email. If missing, ask the caller: Real quick, what's the best email to put on file?",
+        },
+      },
+    },
+  };
+}
+
+async function ensureCalendarToolId(apiKey: string, diagnostics: OpResult[]): Promise<string | null> {
+  const headers: Record<string, string> = {
+    "xi-api-key": apiKey,
+    "Content-Type": "application/json",
+  };
+
+  const listOp = await elevenLabsOp(
+    "list_tools",
+    "https://api.elevenlabs.io/v1/convai/tools",
+    { headers },
+    "convai_tools_read",
+  );
+  diagnostics.push(listOp);
+
+  if (listOp.ok) {
+    const existing = (listOp.data?.tools || []).find((tool: any) => tool?.tool_config?.name === CALENDAR_TOOL_NAME);
+    if (existing?.id) return existing.id;
+  } else {
+    console.warn(`Tool list failed; will try create directly: ${listOp.error_text}`);
+  }
+
+  const createOp = await elevenLabsOp(
+    "create_calendar_tool",
+    "https://api.elevenlabs.io/v1/convai/tools",
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ tool_config: buildCalendarToolConfig() }),
+    },
+    "convai_tools_write",
+  );
+  diagnostics.push(createOp);
+  if (!createOp.ok) {
+    console.warn(`Calendar tool create failed: ${createOp.error_text}`);
+    return null;
+  }
+  return createOp.data?.id || null;
+}
+
 type ElevenLabsKeySource = "connector" | "custom";
 
 function resolveApiKey(preferredSource?: string | null): { key: string; source: ElevenLabsKeySource } {
@@ -335,9 +433,21 @@ async function runPipeline(
   }
   console.log(`Using voice: ${resolvedVoiceId}`);
 
+  const calendarToolId = await ensureCalendarToolId(apiKey, diagnostics);
+  if (!calendarToolId) {
+    console.warn("Calendar tool unavailable; agent can speak but may not be able to book");
+  }
+
   // Apply resolved voice to config
   const configToUse = {
     ...SAM_CONVERSATION_CONFIG,
+    agent: {
+      ...SAM_CONVERSATION_CONFIG.agent,
+      prompt: {
+        ...SAM_CONVERSATION_CONFIG.agent.prompt,
+        ...(calendarToolId ? { tool_ids: [calendarToolId] } : {}),
+      },
+    },
     tts: { ...SAM_CONVERSATION_CONFIG.tts, voice_id: resolvedVoiceId },
   };
 
