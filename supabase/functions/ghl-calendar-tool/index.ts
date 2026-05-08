@@ -13,6 +13,8 @@ const AvailabilitySchema = z.object({
   action: z.literal("availability"),
   tenant_id: z.string().uuid().optional(),
   days_ahead: z.number().int().min(1).max(30).default(7),
+  preference: z.string().optional(),
+  timezone: z.string().optional(),
 });
 
 const BookSchema = z.object({
@@ -21,7 +23,7 @@ const BookSchema = z.object({
   conversation_id: z.string().uuid().optional(),
   caller_name: z.string().min(1).default("Chris"),
   caller_phone: z.string().min(8),
-  caller_email: z.string().email().optional(),
+  caller_email: z.preprocess((value) => value === "" ? undefined : value, z.string().email().optional()),
   slot_iso: z.string().datetime({ offset: true }),
 });
 
@@ -37,6 +39,77 @@ function formatSlotForSpeech(slotIso: string, timezone: string): string {
     timeZone: timezone,
     timeZoneName: "short",
   }).format(new Date(slotIso));
+}
+
+function slotParts(slotIso: string, timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: timezone,
+  }).formatToParts(new Date(slotIso));
+  const get = (type: string) => parts.find((p) => p.type === type)?.value || "";
+  const hourText = get("hour");
+  const dayPeriod = get("dayPeriod");
+  const hour24 = Number(new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    hour12: false,
+    timeZone: timezone,
+  }).format(new Date(slotIso)));
+  return {
+    weekday: get("weekday"),
+    month: get("month"),
+    day: get("day"),
+    time: `${hourText}:${get("minute")} ${dayPeriod}`.trim(),
+    hour24,
+  };
+}
+
+function normalizePreference(input?: string): string {
+  return (input || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function filterSlots(slots: string[], timezone: string, preference?: string): string[] {
+  const pref = normalizePreference(preference);
+  if (!pref) return slots;
+
+  const dayMatch = pref.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/);
+  const afterMatch = pref.match(/\b(after|later than)\s+(\d{1,2})(?::\d{2})?\s*(am|pm|a m|p m)?\b/);
+  const beforeMatch = pref.match(/\b(before|earlier than)\s+(\d{1,2})(?::\d{2})?\s*(am|pm|a m|p m)?\b/);
+  const toHour24 = (hourText: string, marker?: string) => {
+    let hour = Number(hourText);
+    const m = (marker || "").replace(/\s/g, "");
+    if (m === "pm" && hour < 12) hour += 12;
+    if (m === "am" && hour === 12) hour = 0;
+    if (!m && hour >= 1 && hour <= 7) hour += 12;
+    return hour;
+  };
+
+  let scopedSlots = slots;
+  if (/\b(next week|following week)\b/.test(pref)) {
+    const now = new Date();
+    const daysUntilNextMonday = ((8 - now.getDay()) % 7) || 7;
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysUntilNextMonday).getTime();
+    const end = start + 7 * 24 * 60 * 60 * 1000;
+    scopedSlots = slots.filter((slot) => {
+      const t = new Date(slot).getTime();
+      return t >= start && t < end;
+    });
+  }
+
+  return scopedSlots.filter((slot) => {
+    const { hour24, weekday } = slotParts(slot, timezone);
+    if (dayMatch && weekday.toLowerCase() !== dayMatch[1]) return false;
+    if (afterMatch && hour24 <= toHour24(afterMatch[2], afterMatch[3])) return false;
+    if (beforeMatch && hour24 >= toHour24(beforeMatch[2], beforeMatch[3])) return false;
+    if (/\b(morning|am|a m|early)\b/.test(pref)) return hour24 < 12;
+    if (/\b(afternoon|pm|p m|later)\b/.test(pref)) return hour24 >= 12 && hour24 < 17;
+    if (/\b(evening|after work|night)\b/.test(pref)) return hour24 >= 17;
+    return true;
+  });
 }
 
 serve(async (req) => {
@@ -65,21 +138,43 @@ serve(async (req) => {
     if (parsed.data.action === "availability") {
       const startMs = Date.now();
       const endMs = startMs + parsed.data.days_ahead * 24 * 60 * 60 * 1000;
-      const raw = await client.getCalendarSlots(tenant.ghl_calendar_id, startMs, endMs, tenant.timezone);
+      const timezone = parsed.data.timezone || tenant.timezone;
+      const raw = await client.getCalendarSlots(tenant.ghl_calendar_id, startMs, endMs, timezone);
       const all = flattenSlots(raw);
-      const options = all.slice(0, 4).map((slotIso, index) => ({
-        option: index + 1,
-        slot_iso: slotIso,
-        spoken: formatSlotForSpeech(slotIso, tenant.timezone),
-      }));
+      const filtered = filterSlots(all, timezone, parsed.data.preference);
+      const options = filtered.slice(0, 4).map((slotIso, index) => {
+        const parts = slotParts(slotIso, timezone);
+        return {
+          option: index + 1,
+          slot_iso: slotIso,
+          spoken: formatSlotForSpeech(slotIso, timezone),
+          weekday: parts.weekday,
+          date: `${parts.month} ${parts.day}`,
+          time: parts.time,
+          timezone,
+        };
+      });
 
       return jsonResponse({
         ok: true,
-        timezone: tenant.timezone,
+        timezone,
         total_available: all.length,
+        total_matching_preference: filtered.length,
+        preference: parsed.data.preference || null,
         options,
-        instruction: "Offer two options to the caller. If they choose one, call this tool again with action=book and the exact slot_iso.",
+        instruction: options.length
+          ? "Offer two options to the caller. Remember each option number and exact slot_iso. If they choose one, call this tool again with action=book and that exact slot_iso."
+          : "No matching slots were found for that preference. Ask for a different time window, then call availability again.",
       });
+    }
+
+    if (!parsed.data.caller_email) {
+      return jsonResponse({
+        ok: false,
+        needs_email: true,
+        error: "caller_email required before booking",
+        instruction: "Ask: Real quick, what's the best email to put on file? Then call this tool again with the same slot_iso and caller_email.",
+      }, 400);
     }
 
     const [firstName, ...rest] = parsed.data.caller_name.trim().split(/\s+/);

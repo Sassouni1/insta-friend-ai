@@ -9,13 +9,16 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const BRIDGE_WS_URL = `wss://${new URL(SUPABASE_URL).host.replace(".supabase.co", ".functions.supabase.co")}/telnyx-bridge`;
+const CHRIS_TEST_NUMBER = "+17276374672";
 
 const BodySchema = z.object({
   tenant_id: z.string().uuid(),
   to_number: z.string().min(8),
-  from_number: z.string().min(8),
-  connection_id: z.string().min(1),
+  from_number: z.string().min(8).optional(),
+  connection_id: z.string().min(1).optional(),
   caller_name: z.string().optional(),
+  caller_email: z.string().email().optional(),
+  test_call: z.boolean().optional(),
 });
 
 serve(async (req) => {
@@ -50,7 +53,38 @@ serve(async (req) => {
     if (!parsed.success) {
       return jsonResponse({ error: parsed.error.flatten().fieldErrors }, 400);
     }
-    const { tenant_id, to_number, from_number, connection_id, caller_name } = parsed.data;
+    const { tenant_id, to_number, caller_name, caller_email } = parsed.data;
+    const isChrisTestCall = parsed.data.test_call === true && to_number === CHRIS_TEST_NUMBER;
+
+    const { data: tenantRow } = await admin
+      .from("tenants")
+      .select("name, timezone, active")
+      .eq("id", tenant_id)
+      .maybeSingle();
+
+    if (!tenantRow?.active && !isChrisTestCall) {
+      return jsonResponse({ error: "tenant inactive; only Chris test calls are allowed while paused" }, 403);
+    }
+
+    let fromNumber = parsed.data.from_number || "";
+    let connectionId = parsed.data.connection_id || "";
+    if (!fromNumber || !connectionId) {
+      const { data: phoneRow } = await admin
+        .from("phone_numbers")
+        .select("e164_number, telnyx_connection_id, active")
+        .eq("tenant_id", tenant_id)
+        .order("active", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!phoneRow?.e164_number || !phoneRow?.telnyx_connection_id) {
+        return jsonResponse({ error: "no phone number configured for tenant" }, 400);
+      }
+      if (!phoneRow.active && !isChrisTestCall) {
+        return jsonResponse({ error: "phone number inactive; only Chris test calls are allowed while paused" }, 403);
+      }
+      fromNumber = fromNumber || phoneRow.e164_number;
+      connectionId = connectionId || phoneRow.telnyx_connection_id;
+    }
 
     // Pre-create conversation row so we have an id for the stream URL
     const { data: convRow, error: convErr } = await admin
@@ -67,12 +101,6 @@ serve(async (req) => {
       return jsonResponse({ error: "failed to create conversation", details: convErr?.message }, 500);
     }
 
-    const { data: tenantRow } = await admin
-      .from("tenants")
-      .select("name, timezone")
-      .eq("id", tenant_id)
-      .maybeSingle();
-
     const params = new URLSearchParams({
       conv: convRow.id,
       tenant: tenant_id,
@@ -80,6 +108,7 @@ serve(async (req) => {
       direction: "outbound",
     });
     if (caller_name) params.set("name", caller_name);
+    if (caller_email) params.set("email", caller_email);
     if (tenantRow?.name) params.set("company", tenantRow.name);
     if (tenantRow?.timezone) params.set("tz", tenantRow.timezone);
 
@@ -87,8 +116,8 @@ serve(async (req) => {
 
     const dialRes = await telnyxDial({
       to: to_number,
-      from: from_number,
-      connection_id,
+      from: fromNumber,
+      connection_id: connectionId,
       stream_url: streamUrl,
       stream_track: "inbound_track",
       stream_codec: "PCMU",

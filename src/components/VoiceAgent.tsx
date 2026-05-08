@@ -97,6 +97,33 @@ function VoiceAgentInner() {
   }, []);
 
   const conversation = useConversation({
+    clientTools: {
+      ghl_calendar_tool: async (parameters: any) => {
+        addDiagEvent("client_tool_call", JSON.stringify(parameters).slice(0, 120));
+        const action = typeof parameters?.action === "string" ? parameters.action : "availability";
+        const body = {
+          ...parameters,
+          action,
+          tenant_id: parameters?.tenant_id || "8ad5b297-2581-4953-91bb-7cef9a8f2080",
+        };
+
+        if (action === "book") {
+          body.conversation_id = body.conversation_id || conversationIdRef.current || undefined;
+          body.caller_name = body.caller_name || "Chris";
+          body.caller_phone = body.caller_phone || "+17276374672";
+        }
+
+        const { data, error } = await supabase.functions.invoke("ghl-calendar-tool", { body });
+        if (error || data?.ok === false) {
+          const message = data?.error || error?.message || "calendar tool failed";
+          addDiagEvent("client_tool_error", String(message).slice(0, 120));
+          throw new Error(message);
+        }
+
+        addDiagEvent("client_tool_result", JSON.stringify(data).slice(0, 120));
+        return JSON.stringify(data);
+      },
+    },
     onConnect: () => {
       console.log("Connected to Sam");
       setError(null);
