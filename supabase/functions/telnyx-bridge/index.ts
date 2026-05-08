@@ -477,6 +477,11 @@ Deno.serve(async (req) => {
   let lastVadScore: number | null = null;
   let calendarToolCallCount = 0;
   let calendarToolErrorCount = 0;
+  let lastCalendarToolName: string | null = null;
+  let lastCalendarToolParams: Record<string, unknown> | null = null;
+  let lastCalendarToolResult: any = null;
+  let lastCalendarToolError: string | null = null;
+  let lastCalendarToolAt: string | null = null;
   let bridgeClosed = false;
   let telnyxStartAt: number | null = null;
   let elStartTimer: number | null = null;
@@ -544,6 +549,13 @@ Deno.serve(async (req) => {
         bridge_telnyx_clear_count: telnyxClearCount,
         bridge_last_inbound_energy: lastInboundEnergy,
         bridge_last_vad_score: lastVadScore,
+        bridge_calendar_tool_call_count: calendarToolCallCount,
+        bridge_calendar_tool_error_count: calendarToolErrorCount,
+        bridge_last_calendar_tool_name: lastCalendarToolName,
+        bridge_last_calendar_tool_params: lastCalendarToolParams,
+        bridge_last_calendar_tool_result: lastCalendarToolResult,
+        bridge_last_calendar_tool_error: lastCalendarToolError,
+        bridge_last_calendar_tool_at: lastCalendarToolAt,
       })
       .eq("id", conversationId)
       .then(() => {});
@@ -863,16 +875,20 @@ Deno.serve(async (req) => {
           const toolCallId = toolEvent.tool_call_id || toolEvent.id;
           const parameters = toolEvent.parameters || {};
           calendarToolCallCount++;
+          lastCalendarToolName = toolName || null;
+          lastCalendarToolParams = parameters as Record<string, unknown>;
+          lastCalendarToolAt = new Date().toISOString();
           console.log(
             `[bridge ${conversationId}] client_tool_call name=${toolName} id=${toolCallId || "-"} params=${JSON.stringify(parameters).slice(0, 600)}`,
           );
 
           if (toolName !== CALENDAR_TOOL_NAME) {
             calendarToolErrorCount++;
+            lastCalendarToolError = `Unknown tool: ${toolName}`;
             socket.send(JSON.stringify({
               type: "client_tool_result",
               tool_call_id: toolCallId,
-              result: `Unknown tool: ${toolName}`,
+              result: lastCalendarToolError,
               is_error: true,
             }));
             break;
@@ -880,6 +896,8 @@ Deno.serve(async (req) => {
 
           try {
             const result = await runCalendarTool(parameters);
+            lastCalendarToolResult = result;
+            lastCalendarToolError = null;
             socket.send(JSON.stringify({
               type: "client_tool_result",
               tool_call_id: toolCallId,
@@ -890,6 +908,7 @@ Deno.serve(async (req) => {
           } catch (err) {
             calendarToolErrorCount++;
             const message = err instanceof Error ? err.message : String(err);
+            lastCalendarToolError = message.slice(0, 2000);
             console.error(`[bridge ${conversationId}] client_tool_result error: ${message.slice(0, 600)}`);
             socket.send(JSON.stringify({
               type: "client_tool_result",
