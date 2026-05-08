@@ -14,8 +14,50 @@ import { telnyxCallControl } from "../_shared/telnyx.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const SAM_AGENT_NAME = "Sam - Hair Systems";
+const SAM_OUTBOUND_AGENT_NAME = "Sam - Hair Systems Outbound Booking Stable";
 const CHRIS_AGENT_NAME = "Chris - Practice Caller";
 const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
+const SAM_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0";
+const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
+
+const SAM_OUTBOUND_PROMPT = `You are Sam, the outbound appointment setter for {{company_name}}.
+
+You are calling a real lead who opted in for hair systems or hair loss help. The caller's first name is {{first_name}} when available. The full caller name is {{caller_name}}.
+
+Critical call-state rules:
+- This is an outbound call. Do not use inbound language like "thanks for reaching out."
+- Your configured first message already said: "Hey — this is Sam with Infinite Hair."
+- After the caller responds, confirm the person naturally: "Am I speaking with {{first_name}}?"
+- If {{first_name}} is "there" or unavailable, confirm naturally: "Am I speaking with the person who was looking into hair systems?"
+- Once the caller confirms identity, never restart the opener and never say "Hey — is this {{first_name}}?" again.
+- If the caller says "hello", "hello Sam", "can you hear me", or "are you there", treat it as an audio check. Say "Yep, I'm here" and continue from the current stage.
+
+Use this flow unless the caller asks a direct question:
+1. Confirm identity: "Am I speaking with {{first_name}}?"
+2. "Got it. You were looking into hair systems or options for hair loss. Does that ring a bell?"
+3. Ask one at a time:
+   - "Is this your first time looking into hair systems?"
+   - "How long have you been dealing with hair loss?"
+   - "Have you looked into anything already, like transplants or medication?"
+4. Say: "Yeah, that makes sense. A lot of guys go down that route first. The difference with hair systems is that it's non-surgical, and you see results right away. A lot of guys try transplants or meds first, and it doesn't always go how they expected. We see that all the time."
+5. Ask: "Out of curiosity, do you notice yourself wearing hats more than you'd like, or using something like Toppik a bit?"
+6. If yes, say: "Yeah, that's super common. Most guys don't even realize they're doing it at first, and once they don't have to anymore, it's a completely different feeling. And honestly, once you actually see yourself with hair again, that's when it really clicks."
+   If no, say: "Got it, not everyone does. Sometimes it's more just noticing it in certain lighting or angles over time. And once you see the difference, it's a completely different feeling."
+7. Say: "What we usually do is just a quick consult so you can actually see how it works and what it would look like for you."
+8. Ask: "Would mornings or afternoons be better for you?"
+
+Booking rules:
+- After the caller gives a scheduling preference, do not restart discovery.
+- You must call ${CALENDAR_TOOL_NAME} with action="availability", tenant_id="{{tenant_id}}", preference set to what the caller said, and timezone="{{tenant_timezone}}".
+- Offer only real options returned by the tool. Never invent times.
+- After the caller chooses a slot, if {{caller_email}} is missing, ask: "Real quick, what's the best email to put on file?"
+- Then call ${CALENDAR_TOOL_NAME} with action="book", tenant_id="{{tenant_id}}", conversation_id="{{conversation_id}}", caller_name="{{caller_name}}", caller_phone="{{caller_phone}}", caller_email, and the exact slot_iso.
+- Only say the appointment is booked after the tool result says booking succeeded.
+
+Style:
+- Ask one question at a time.
+- Keep responses short, calm, and natural.
+- Avoid yelling words like "GOT IT."`;
 
 const DEFAULT_CHRIS_SCRIPT = `You are Chris, a realistic practice lead calling about hair systems.
 
@@ -100,6 +142,139 @@ function buildChrisConversationConfig(script: string) {
   };
 }
 
+function buildCalendarToolConfig() {
+  return {
+    type: "client",
+    name: CALENDAR_TOOL_NAME,
+    description:
+      "Check real GoHighLevel calendar availability and book a consultation appointment. Use action=availability before offering times. Use action=book only after the caller chooses an exact slot_iso.",
+    expects_response: true,
+    response_timeout_secs: 20,
+    disable_interruptions: true,
+    force_pre_tool_speech: true,
+    parameters: {
+      type: "object",
+      required: ["action"],
+      properties: {
+        action: {
+          type: "string",
+          enum: ["availability", "book"],
+          description: "Use availability to fetch real open slots; use book to create the appointment.",
+        },
+        days_ahead: {
+          type: "integer",
+          description: "For availability only. Number of days ahead to search. Default is 7.",
+        },
+        preference: {
+          type: "string",
+          description: "For availability only. Caller scheduling preference, such as morning, afternoon, later, next week, Tuesday, or after 2.",
+        },
+        timezone: {
+          type: "string",
+          description: "For availability only. Timezone to use for speaking and filtering slots, such as America/New_York.",
+        },
+        tenant_id: {
+          type: "string",
+          description: "Tenant id. Use the known tenant_id dynamic variable.",
+        },
+        conversation_id: {
+          type: "string",
+          description: "For booking. Use the known conversation_id dynamic variable.",
+        },
+        slot_iso: {
+          type: "string",
+          description: "For booking only. Exact ISO datetime chosen from a prior availability response.",
+        },
+        caller_name: {
+          type: "string",
+          description: "Caller name. Use the known caller_name dynamic variable when available.",
+        },
+        caller_phone: {
+          type: "string",
+          description: "Caller phone number. Use the known caller_phone dynamic variable.",
+        },
+        caller_email: {
+          type: "string",
+          description: "For booking. Caller email. If missing, ask the caller for the best email.",
+        },
+      },
+    },
+  };
+}
+
+let cachedCalendarToolId: string | null = null;
+
+async function ensureCalendarToolId(apiKey: string): Promise<string | null> {
+  if (cachedCalendarToolId) return cachedCalendarToolId;
+
+  const headers = { "xi-api-key": apiKey, "Content-Type": "application/json" };
+  const list = await elevenLabsJson("https://api.elevenlabs.io/v1/convai/tools", { headers });
+  if (list.ok) {
+    const existing = (list.data?.tools || []).find((tool: any) => tool?.tool_config?.name === CALENDAR_TOOL_NAME);
+    if (existing?.id) {
+      cachedCalendarToolId = existing.id;
+      return cachedCalendarToolId;
+    }
+  } else {
+    console.warn(`[bridge] list tools failed ${list.status}: ${list.text.slice(0, 300)}`);
+  }
+
+  const created = await elevenLabsJson("https://api.elevenlabs.io/v1/convai/tools", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ tool_config: buildCalendarToolConfig() }),
+  });
+  if (!created.ok) {
+    console.warn(`[bridge] create ${CALENDAR_TOOL_NAME} failed ${created.status}: ${created.text.slice(0, 300)}`);
+    return null;
+  }
+
+  cachedCalendarToolId = created.data?.id || null;
+  return cachedCalendarToolId;
+}
+
+function buildSamOutboundConversationConfig(calendarToolId?: string | null) {
+  return {
+    agent: {
+      prompt: {
+        prompt: SAM_OUTBOUND_PROMPT,
+        ...(calendarToolId ? { tool_ids: [calendarToolId] } : {}),
+      },
+      first_message: "Hey — this is Sam with Infinite Hair.",
+      language: "en",
+    },
+    turn: {
+      mode: "turn",
+      turn_timeout: 4,
+      turn_eagerness: "normal",
+    },
+    asr: {
+      quality: "high",
+      keywords: ["yes", "yeah", "no", "hair system", "hair loss", "transplant", "medication", "morning", "mornings", "afternoon", "afternoons", "appointment"],
+    },
+    conversation: {
+      client_events: [
+        "audio",
+        "interruption",
+        "agent_response",
+        "user_transcript",
+        "agent_response_correction",
+        "client_tool_call",
+        "agent_tool_response",
+        "vad_score",
+        "ping",
+      ],
+    },
+    tts: {
+      model_id: "eleven_flash_v2",
+      voice_id: SAM_VOICE_ID,
+      stability: 0.72,
+      similarity_boost: 0.75,
+      speed: 0.95,
+    },
+  };
+}
+
 async function elevenLabsJson(
   url: string,
   options: RequestInit,
@@ -149,11 +324,23 @@ async function ensureAgentId(apiKey: string, name: string, conversationConfig?: 
   return agentId;
 }
 
-async function getOrFetchAgentId(apiKey: string, botKind: string, script: string): Promise<string | null> {
+async function getOrFetchAgentId(apiKey: string, botKind: string, script: string, samRoute: "inbound" | "outbound"): Promise<string | null> {
   if (botKind === "chris") {
     const envAgentId = Deno.env.get("PRACTICE_CHRIS_AGENT_ID")?.trim();
     if (envAgentId) return envAgentId;
     return ensureAgentId(apiKey, CHRIS_AGENT_NAME, buildChrisConversationConfig(script));
+  }
+
+  if (samRoute === "outbound") {
+    const calendarToolId = await ensureCalendarToolId(apiKey);
+    if (!calendarToolId) console.warn(`[bridge] ${CALENDAR_TOOL_NAME} unavailable; outbound Sam will ask for timing but may not book`);
+    const outboundAgent = await ensureAgentId(
+      apiKey,
+      SAM_OUTBOUND_AGENT_NAME,
+      buildSamOutboundConversationConfig(calendarToolId),
+    );
+    if (outboundAgent) return outboundAgent;
+    console.warn(`[bridge] outbound Sam agent unavailable; falling back to inbound Sam agent`);
   }
 
   const envAgentId = Deno.env.get("ELEVENLABS_AGENT_ID")?.trim();
@@ -193,6 +380,7 @@ Deno.serve(async (req) => {
   const companyName = url.searchParams.get("company") || "";
   const tenantTimezone = url.searchParams.get("tz") || "";
   const requestedBot = url.searchParams.get("bot") || "sam";
+  const requestedDirection = url.searchParams.get("direction") || "";
 
   if (!conversationId || !tenantId) {
     return new Response("missing conv or tenant", { status: 400 });
@@ -206,19 +394,23 @@ Deno.serve(async (req) => {
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const { data: conversationRow } = await supabase
     .from("conversations")
-    .select("agent_id, telnyx_event_payload")
+    .select("agent_id, direction, telnyx_event_payload")
     .eq("id", conversationId)
     .maybeSingle();
   const metadata = (conversationRow?.telnyx_event_payload || {}) as Record<string, unknown>;
   const botKind = requestedBot === "chris" || conversationRow?.agent_id === "practice_chris" ? "chris" : "sam";
+  const callDirection = requestedDirection || conversationRow?.direction || "";
+  const samRoute = botKind === "sam" && callDirection === "outbound" ? "outbound" : "inbound";
   const practiceScript = typeof metadata.practice_script === "string" && metadata.practice_script.trim()
     ? metadata.practice_script
     : DEFAULT_CHRIS_SCRIPT;
 
-  const agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript);
+  const agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript, samRoute);
   if (!agentId) {
     return new Response("ElevenLabs agent not found", { status: 500 });
   }
+
+  console.log(`[bridge ${conversationId}] using agent=${agentId} route=${botKind}:${samRoute}`);
 
   let signedUrl: string;
   try {
@@ -259,20 +451,30 @@ Deno.serve(async (req) => {
   let firstVadLogged = false;
   let vadWarnTimer: number | null = null;
   let practiceHangupScheduled = false;
+  let calendarToolCallCount = 0;
+  let calendarToolErrorCount = 0;
+  let lastCalendarToolName: string | null = null;
+  let lastCalendarToolParams: Record<string, unknown> | null = null;
+  let lastCalendarToolResult: Record<string, unknown> | null = null;
+  let lastCalendarToolError: string | null = null;
+  let lastCalendarToolAt: string | null = null;
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
   let inboundSpeechFrameCount = 0;
   let firstInboundSpeechAt: string | null = null;
   let bridgeClosed = false;
+  let telnyxStartAt: number | null = null;
+  let elStartTimer: number | null = null;
   let agentSpeakingUntil = 0;
   let lastForwardedSpeechAt = 0;
   const AGENT_SPEAK_TAIL_MS = 600;
   const INTERRUPTION_CLEAR_TAIL_MS = 150;
   const RECENT_SPEECH_WINDOW_MS = 1200;
   const INBOUND_SPEECH_THRESHOLD = 180;
+  const OUTBOUND_FIRST_SPEAK_DELAY_MS = 2500;
   const pendingTelnyxAudio: string[] = [];
 
-  console.log(`[bridge ${conversationId}] params bot=${botKind} tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
+  console.log(`[bridge ${conversationId}] params bot=${botKind} direction=${callDirection || "-"} route=${samRoute} tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
 
   let connectedAt: number | null = null;
   let startSeen = false;
@@ -286,7 +488,9 @@ Deno.serve(async (req) => {
     if (bridgeClosed) return;
     bridgeClosed = true;
     console.log(`[bridge ${conversationId}] closing: ${reason}`);
+    console.log(`[bridge ${conversationId}] calendar tool calls=${calendarToolCallCount} errors=${calendarToolErrorCount}`);
     clearTimeout(startTimer);
+    if (elStartTimer !== null) clearTimeout(elStartTimer);
     try {
       if (telnyxSocket.readyState < 2) telnyxSocket.close();
     } catch {}
@@ -300,6 +504,13 @@ Deno.serve(async (req) => {
         media_frame_count: telnyxMediaCount,
         inbound_speech_frame_count: inboundSpeechFrameCount,
         first_inbound_speech_at: firstInboundSpeechAt,
+        bridge_calendar_tool_call_count: calendarToolCallCount,
+        bridge_calendar_tool_error_count: calendarToolErrorCount,
+        bridge_last_calendar_tool_name: lastCalendarToolName,
+        bridge_last_calendar_tool_params: lastCalendarToolParams,
+        bridge_last_calendar_tool_result: lastCalendarToolResult,
+        bridge_last_calendar_tool_error: lastCalendarToolError,
+        bridge_last_calendar_tool_at: lastCalendarToolAt,
       })
       .eq("id", conversationId)
       .then(() => {});
@@ -386,6 +597,46 @@ Deno.serve(async (req) => {
     }
   }
 
+  async function runCalendarTool(parameters: Record<string, unknown>) {
+    const action = typeof parameters.action === "string" ? parameters.action : "availability";
+    const body: Record<string, unknown> = {
+      ...parameters,
+      action,
+      tenant_id: typeof parameters.tenant_id === "string" ? parameters.tenant_id : tenantId,
+    };
+
+    if (action === "availability") {
+      if (!body.timezone) body.timezone = tenantTimezone || "America/New_York";
+      if (!body.days_ahead) body.days_ahead = 7;
+    }
+
+    if (action === "book") {
+      if (!body.conversation_id) body.conversation_id = conversationId;
+      if (!body.caller_name) body.caller_name = callerName || "Lead";
+      if (!body.caller_phone) body.caller_phone = callerPhone;
+      if (!body.caller_email && callerEmail) body.caller_email = callerEmail;
+    }
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/ghl-calendar-tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    let data: any = text;
+    try { data = JSON.parse(text); } catch {}
+
+    if (!res.ok || data?.ok === false) {
+      throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+    }
+
+    return data;
+  }
+
   function initElSocket() {
     if (bridgeClosed || elSocket || elConnecting) return;
 
@@ -408,6 +659,7 @@ Deno.serve(async (req) => {
             "agent_response",
             "user_transcript",
             "agent_response_correction",
+            "client_tool_call",
             "agent_tool_response",
             "vad_score",
             "ping",
@@ -426,8 +678,9 @@ Deno.serve(async (req) => {
             caller_name: callerName,
             caller_email: callerEmail,
             first_name: firstName,
-            company_name: companyName,
-            tenant_timezone: tenantTimezone,
+            company_name: companyName || "Infinite Hair",
+            tenant_timezone: tenantTimezone || "America/New_York",
+            call_direction: callDirection,
           },
         }),
       );
@@ -540,6 +793,57 @@ Deno.serve(async (req) => {
           }));
           break;
 
+        case "client_tool_call": {
+          const toolEvent = msg.client_tool_call || msg.client_tool_call_event || {};
+          const toolName = toolEvent.tool_name || toolEvent.name;
+          const toolCallId = toolEvent.tool_call_id || toolEvent.id;
+          const parameters = toolEvent.parameters || {};
+          calendarToolCallCount++;
+          lastCalendarToolName = toolName || null;
+          lastCalendarToolParams = parameters;
+          lastCalendarToolError = null;
+          lastCalendarToolAt = new Date().toISOString();
+          console.log(
+            `[bridge ${conversationId}] client_tool_call name=${toolName} id=${toolCallId || "-"} params=${JSON.stringify(parameters).slice(0, 600)}`,
+          );
+
+          if (toolName !== CALENDAR_TOOL_NAME) {
+            calendarToolErrorCount++;
+            lastCalendarToolError = `Unknown tool: ${toolName}`;
+            socket.send(JSON.stringify({
+              type: "client_tool_result",
+              tool_call_id: toolCallId,
+              result: `Unknown tool: ${toolName}`,
+              is_error: true,
+            }));
+            break;
+          }
+
+          try {
+            const result = await runCalendarTool(parameters);
+            lastCalendarToolResult = result;
+            socket.send(JSON.stringify({
+              type: "client_tool_result",
+              tool_call_id: toolCallId,
+              result: JSON.stringify(result),
+              is_error: false,
+            }));
+            console.log(`[bridge ${conversationId}] client_tool_result ok action=${parameters.action || "availability"}`);
+          } catch (err) {
+            calendarToolErrorCount++;
+            const message = err instanceof Error ? err.message : String(err);
+            lastCalendarToolError = message.slice(0, 1000);
+            console.error(`[bridge ${conversationId}] client_tool_result error: ${message.slice(0, 600)}`);
+            socket.send(JSON.stringify({
+              type: "client_tool_result",
+              tool_call_id: toolCallId,
+              result: `Calendar tool failed: ${message.slice(0, 800)}`,
+              is_error: true,
+            }));
+          }
+          break;
+        }
+
         case "vad_score": {
           const score = msg.vad_score_event?.vad_score ?? msg.vad_score;
           if (!firstVadLogged && typeof score === "number") {
@@ -589,6 +893,27 @@ Deno.serve(async (req) => {
     };
   }
 
+  function scheduleElSocketStart(reason: string) {
+    if (bridgeClosed || elSocket || elConnecting) return;
+
+    if (samRoute === "outbound") {
+      const startFrom = telnyxStartAt || Date.now();
+      const waitMs = Math.max(0, startFrom + OUTBOUND_FIRST_SPEAK_DELAY_MS - Date.now());
+      if (waitMs > 0) {
+        if (elStartTimer === null) {
+          console.log(`[bridge ${conversationId}] delaying first outbound agent audio ${waitMs}ms (${reason})`);
+          elStartTimer = setTimeout(() => {
+            elStartTimer = null;
+            initElSocket();
+          }, waitMs) as unknown as number;
+        }
+        return;
+      }
+    }
+
+    initElSocket();
+  }
+
   telnyxSocket.onopen = () => console.log(`[bridge ${conversationId}] Telnyx WS open`);
 
   telnyxSocket.onmessage = (ev) => {
@@ -614,9 +939,10 @@ Deno.serve(async (req) => {
       case "start":
         startSeen = true;
         clearTimeout(startTimer);
+        telnyxStartAt = Date.now();
         telnyxStreamId = frame.stream_id || frame.start?.stream_id;
         console.log(`[bridge ${conversationId}] Telnyx START stream_id=${telnyxStreamId} payload=${JSON.stringify(frame).slice(0, 400)}`);
-        initElSocket();
+        scheduleElSocketStart("telnyx start");
         break;
 
       case "media": {
@@ -649,7 +975,7 @@ Deno.serve(async (req) => {
         if (telnyxMediaCount % 250 === 0) {
           console.log(`[bridge ${conversationId}] Telnyx media frames: ${telnyxMediaCount}`);
         }
-        if (!elSocket && !elConnecting) initElSocket();
+        if (!elSocket && !elConnecting) scheduleElSocketStart("first media");
 
         const muted = Date.now() < agentSpeakingUntil;
         if (!muted && typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD) {
