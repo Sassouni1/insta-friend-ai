@@ -107,7 +107,7 @@ function filterSlots(slots: string[], timezone: string, preference?: string): st
     if (beforeMatch && hour24 >= toHour24(beforeMatch[2], beforeMatch[3])) return false;
     if (/\b(mornings?|am|a m|early)\b/.test(pref)) return hour24 < 12;
     if (/\b(afternoons?|pm|p m|later)\b/.test(pref)) return hour24 >= 12 && hour24 < 17;
-    if (/\b(evenings?|after work|night)\b/.test(pref)) return hour24 >= 17;
+    if (/\b(evening|after work|night)\b/.test(pref)) return hour24 >= 17;
     return true;
   });
 }
