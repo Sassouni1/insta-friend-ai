@@ -549,6 +549,13 @@ Deno.serve(async (req) => {
         bridge_telnyx_clear_count: telnyxClearCount,
         bridge_last_inbound_energy: lastInboundEnergy,
         bridge_last_vad_score: lastVadScore,
+        bridge_calendar_tool_call_count: calendarToolCallCount,
+        bridge_calendar_tool_error_count: calendarToolErrorCount,
+        bridge_last_calendar_tool_name: lastCalendarToolName,
+        bridge_last_calendar_tool_params: lastCalendarToolParams,
+        bridge_last_calendar_tool_result: lastCalendarToolResult,
+        bridge_last_calendar_tool_error: lastCalendarToolError,
+        bridge_last_calendar_tool_at: lastCalendarToolAt,
       })
       .eq("id", conversationId)
       .then(() => {});
