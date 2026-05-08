@@ -479,7 +479,7 @@ Deno.serve(async (req) => {
   let calendarToolErrorCount = 0;
   let lastCalendarToolName: string | null = null;
   let lastCalendarToolParams: Record<string, unknown> | null = null;
-  let lastCalendarToolResult: any = null;
+  let lastCalendarToolResult: Record<string, unknown> | null = null;
   let lastCalendarToolError: string | null = null;
   let lastCalendarToolAt: string | null = null;
   let bridgeClosed = false;
@@ -876,7 +876,8 @@ Deno.serve(async (req) => {
           const parameters = toolEvent.parameters || {};
           calendarToolCallCount++;
           lastCalendarToolName = toolName || null;
-          lastCalendarToolParams = parameters as Record<string, unknown>;
+          lastCalendarToolParams = parameters;
+          lastCalendarToolError = null;
           lastCalendarToolAt = new Date().toISOString();
           console.log(
             `[bridge ${conversationId}] client_tool_call name=${toolName} id=${toolCallId || "-"} params=${JSON.stringify(parameters).slice(0, 600)}`,
@@ -888,7 +889,7 @@ Deno.serve(async (req) => {
             socket.send(JSON.stringify({
               type: "client_tool_result",
               tool_call_id: toolCallId,
-              result: lastCalendarToolError,
+              result: `Unknown tool: ${toolName}`,
               is_error: true,
             }));
             break;
@@ -897,7 +898,6 @@ Deno.serve(async (req) => {
           try {
             const result = await runCalendarTool(parameters);
             lastCalendarToolResult = result;
-            lastCalendarToolError = null;
             socket.send(JSON.stringify({
               type: "client_tool_result",
               tool_call_id: toolCallId,
@@ -908,7 +908,7 @@ Deno.serve(async (req) => {
           } catch (err) {
             calendarToolErrorCount++;
             const message = err instanceof Error ? err.message : String(err);
-            lastCalendarToolError = message.slice(0, 2000);
+            lastCalendarToolError = message.slice(0, 1000);
             console.error(`[bridge ${conversationId}] client_tool_result error: ${message.slice(0, 600)}`);
             socket.send(JSON.stringify({
               type: "client_tool_result",
