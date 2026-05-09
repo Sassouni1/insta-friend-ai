@@ -69,9 +69,11 @@ If Sam asks about timing, say afternoons are best and you are in Pacific time.
 If Sam offers appointment slots, choose the first clear option.`;
 
 function resolveElevenLabsKey(): string {
+  // Prefer ELEVENLABS_API_KEY_CUSTOM first because it carries agent write access (convai_*).
+  // The connector-managed ELEVENLABS_API_KEY is used as fallback only.
   return (
-    Deno.env.get("ELEVENLABS_API_KEY")?.trim() ||
     Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim() ||
+    Deno.env.get("ELEVENLABS_API_KEY")?.trim() ||
     ""
   );
 }
