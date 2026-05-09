@@ -334,7 +334,7 @@ async function getOrFetchAgentId(apiKey: string, botKind: string, script: string
   if (samRoute === "outbound") {
     const calendarToolId = await ensureCalendarToolId(apiKey);
     if (!calendarToolId) {
-      throw new Error(`outbound_setup_failed: ${CALENDAR_TOOL_NAME} could not be created/fetched`);
+      console.warn(`[telnyx-bridge] ${CALENDAR_TOOL_NAME} unavailable; building outbound agent without tool_ids so Sam can still speak`);
     }
     const outboundAgent = await ensureAgentId(
       apiKey,
