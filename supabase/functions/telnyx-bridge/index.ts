@@ -70,8 +70,8 @@ If Sam offers appointment slots, choose the first clear option.`;
 
 function resolveElevenLabsKey(): string {
   return (
-    Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim() ||
     Deno.env.get("ELEVENLABS_API_KEY")?.trim() ||
+    Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim() ||
     ""
   );
 }
