@@ -409,8 +409,34 @@ Deno.serve(async (req) => {
     ? metadata.practice_script
     : DEFAULT_CHRIS_SCRIPT;
 
-  const agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript, samRoute);
+  async function failOutbound(reason: string, elReason?: string) {
+    console.error(`[bridge ${conversationId}] outbound failure: ${reason}${elReason ? ` el=${elReason}` : ""}`);
+    try {
+      await supabase
+        .from("conversations")
+        .update({
+          bridge_close_reason: reason,
+          ...(elReason ? { el_close_reason: elReason } : {}),
+        })
+        .eq("id", conversationId);
+    } catch (e) {
+      console.error(`[bridge ${conversationId}] failed to persist close_reason`, e);
+    }
+  }
+
+  let agentId: string | null = null;
+  try {
+    agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript, samRoute);
+  } catch (err: any) {
+    const reason = `outbound_setup_failed: ${err?.message || String(err)}`;
+    await failOutbound(reason, "agent_or_tool_setup_failed");
+    return new Response(reason, { status: 500 });
+  }
   if (!agentId) {
+    if (samRoute === "outbound") {
+      await failOutbound("outbound_agent_missing", "agent_lookup_returned_null");
+      return new Response("Outbound ElevenLabs agent not found", { status: 500 });
+    }
     return new Response("ElevenLabs agent not found", { status: 500 });
   }
 
@@ -425,16 +451,25 @@ Deno.serve(async (req) => {
     if (!signRes.ok) {
       const txt = await signRes.text();
       console.error(`[bridge ${conversationId}] get-signed-url ${signRes.status}: ${txt.slice(0, 200)}`);
+      if (samRoute === "outbound") {
+        await failOutbound("outbound_signed_url_failed", `status_${signRes.status}`);
+      }
       return new Response("Failed to get ElevenLabs signed URL", { status: 500 });
     }
     const signData = await signRes.json();
     signedUrl = signData.signed_url;
     if (!signedUrl) {
       console.error(`[bridge ${conversationId}] no signed_url in response`);
+      if (samRoute === "outbound") {
+        await failOutbound("outbound_signed_url_missing", "no_signed_url_in_response");
+      }
       return new Response("ElevenLabs signed URL missing", { status: 500 });
     }
   } catch (err) {
     console.error(`[bridge ${conversationId}] signed url error`, err);
+    if (samRoute === "outbound") {
+      await failOutbound("outbound_signed_url_exception", String((err as any)?.message || err));
+    }
     return new Response("ElevenLabs auth failed", { status: 500 });
   }
 
