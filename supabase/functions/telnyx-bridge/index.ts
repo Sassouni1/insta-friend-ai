@@ -333,14 +333,18 @@ async function getOrFetchAgentId(apiKey: string, botKind: string, script: string
 
   if (samRoute === "outbound") {
     const calendarToolId = await ensureCalendarToolId(apiKey);
-    if (!calendarToolId) console.warn(`[bridge] ${CALENDAR_TOOL_NAME} unavailable; outbound Sam will ask for timing but may not book`);
+    if (!calendarToolId) {
+      throw new Error(`outbound_setup_failed: ${CALENDAR_TOOL_NAME} could not be created/fetched`);
+    }
     const outboundAgent = await ensureAgentId(
       apiKey,
       SAM_OUTBOUND_AGENT_NAME,
       buildSamOutboundConversationConfig(calendarToolId),
     );
-    if (outboundAgent) return outboundAgent;
-    console.warn(`[bridge] outbound Sam agent unavailable; falling back to inbound Sam agent`);
+    if (!outboundAgent) {
+      throw new Error(`outbound_setup_failed: agent "${SAM_OUTBOUND_AGENT_NAME}" could not be created/fetched`);
+    }
+    return outboundAgent;
   }
 
   const envAgentId = Deno.env.get("ELEVENLABS_AGENT_ID")?.trim();
