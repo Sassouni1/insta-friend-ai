@@ -689,14 +689,13 @@ Deno.serve(async (req) => {
     bridgeClosed = true;
     console.log(`[bridge ${conversationId}] closing: ${reason}`);
     console.log(`[bridge ${conversationId}] calendar tool calls=${calendarToolCallCount} errors=${calendarToolErrorCount}`);
-    console.log(`[bridge ${conversationId}] agent audio totals queued=${queuedAgentAudioFrames} sent=${sentAgentAudioFrames} maxDepth=${maxAgentQueueDepth} dropped=${droppedAgentAudioFrames}`);
+    console.log(`[bridge ${conversationId}] agent audio totals queuedFrames=${queuedAgentAudioFrames} sentFrames=${sentAgentAudioFrames} queuedPackets=${queuedAgentAudioPackets} sentPackets=${sentAgentAudioPackets} maxDepth=${maxAgentQueueDepth} droppedPackets=${droppedAgentAudioPackets}`);
     {
       const avg = payloadBytesCount > 0 ? Math.round(payloadBytesSum / payloadBytesCount) : 0;
-      console.log(`[bridge ${conversationId}] payload bytes final min=${payloadBytesMin === Number.POSITIVE_INFINITY ? "-" : payloadBytesMin} max=${payloadBytesMax} avg=${avg} count=${payloadBytesCount} nonStandard=${nonStandardFrameCount} starvations=${starvationLogCount} passthrough=${elOutputPassthrough} elFormat=${elAgentOutputAudioFormat}`);
+      console.log(`[bridge ${conversationId}] payload bytes final min=${payloadBytesMin === Number.POSITIVE_INFINITY ? "-" : payloadBytesMin} max=${payloadBytesMax} avg=${avg} count=${payloadBytesCount} nonStandard=${nonStandardFrameCount} passthrough=${elOutputPassthrough} elFormat=${elAgentOutputAudioFormat}`);
     }
     clearTimeout(startTimer);
     if (elStartTimer !== null) clearTimeout(elStartTimer);
-    stopAgentPacer();
     try {
       if (telnyxSocket.readyState < 2) telnyxSocket.close();
     } catch {}
@@ -726,7 +725,7 @@ Deno.serve(async (req) => {
       try {
         const avg = payloadBytesCount > 0 ? Math.round(payloadBytesSum / payloadBytesCount) : 0;
         const minB = payloadBytesMin === Number.POSITIVE_INFINITY ? 0 : payloadBytesMin;
-        const closeText = `[BRIDGE_DIAGNOSTIC_CLOSE] queued=${queuedAgentAudioFrames} sent=${sentAgentAudioFrames} starvation=${starvationLogCount} non160=${nonStandardFrameCount} min_bytes=${minB} max_bytes=${payloadBytesMax} avg_bytes=${avg}`;
+        const closeText = `[BRIDGE_DIAGNOSTIC_CLOSE] queued_frames=${queuedAgentAudioFrames} sent_frames=${sentAgentAudioFrames} queued_packets=${queuedAgentAudioPackets} sent_packets=${sentAgentAudioPackets} dropped_packets=${droppedAgentAudioPackets} non_packet_multiple=${nonStandardFrameCount} min_bytes=${minB} max_bytes=${payloadBytesMax} avg_bytes=${avg}`;
         const { error: closeErr } = await supabase.from("transcript_entries").insert({
           conversation_id: conversationId,
           role: "agent",
