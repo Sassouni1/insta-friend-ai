@@ -654,20 +654,35 @@ Deno.serve(async (req) => {
       console.error(`[bridge ${conversationId}] failed to decode transformed EL audio`, err);
       return;
     }
-    // Chunk into exact 160-byte PCMU frames; pad ONLY the final short chunk with mu-law silence (0xff).
-    for (let i = 0; i < raw.length; i += 160) {
-      const slice = raw.subarray(i, Math.min(i + 160, raw.length));
-      let frameBytes: Uint8Array;
-      if (slice.length === 160) {
-        frameBytes = slice;
-      } else {
-        frameBytes = new Uint8Array(160);
-        frameBytes.set(slice);
-        frameBytes.fill(0xff, slice.length); // PCMU silence pad
-        console.log(`[bridge ${conversationId}] padded final chunk ${slice.length}B -> 160B with 0xff silence`);
-      }
-      agentAudioQueue.push(uint8ToBase64(frameBytes));
+    stopAgentRemainderFlushTimer();
+
+    // Telnyx expects exact 20ms / 160-byte PCMU frames. Do not pad every EL chunk:
+    // ElevenLabs often sends arbitrary byte counts, and per-chunk silence padding creates
+    // tiny repeated dropouts that sound like crackle/bad connection. Carry leftovers into
+    // the next audio event and only pad once after the stream goes quiet.
+    const combined = new Uint8Array(agentAudioRemainder.length + raw.length);
+    combined.set(agentAudioRemainder, 0);
+    combined.set(raw, agentAudioRemainder.length);
+
+    const fullFrameBytes = Math.floor(combined.length / 160) * 160;
+    for (let i = 0; i < fullFrameBytes; i += 160) {
+      agentAudioQueue.push(uint8ToBase64(combined.subarray(i, i + 160)));
       queuedAgentAudioFrames++;
+    }
+    agentAudioRemainder = combined.slice(fullFrameBytes);
+    if (agentAudioRemainder.length > 0) {
+      agentRemainderFlushTimer = setTimeout(() => {
+        if (agentAudioRemainder.length === 0) return;
+        const frameBytes = new Uint8Array(160);
+        frameBytes.set(agentAudioRemainder);
+        frameBytes.fill(0xff, agentAudioRemainder.length);
+        console.log(`[bridge ${conversationId}] padded terminal audio remainder ${agentAudioRemainder.length}B -> 160B with 0xff silence`);
+        agentAudioQueue.push(uint8ToBase64(frameBytes));
+        queuedAgentAudioFrames++;
+        agentAudioRemainder = new Uint8Array(0);
+        if (agentAudioQueue.length > maxAgentQueueDepth) maxAgentQueueDepth = agentAudioQueue.length;
+        startAgentPacer();
+      }, 120) as unknown as number;
     }
     if (agentAudioQueue.length > maxAgentQueueDepth) maxAgentQueueDepth = agentAudioQueue.length;
     startAgentPacer();
