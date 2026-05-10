@@ -637,7 +637,9 @@ Deno.serve(async (req) => {
     }
     stopAgentRemainderFlushTimer();
 
-    // Telnyx expects exact 20ms / 160-byte PCMU frames. Do not pad every EL chunk:
+    // Telnyx accepts 20ms to 30s RTP payload chunks. We packetize into 100ms chunks:
+    // fewer websocket sends, no serverless 20ms timer jitter, still low latency.
+    // Do not pad every EL chunk:
     // ElevenLabs often sends arbitrary byte counts, and per-chunk silence padding creates
     // tiny repeated dropouts that sound like crackle/bad connection. Carry leftovers into
     // the next audio event and only pad once after the stream goes quiet.
@@ -645,28 +647,31 @@ Deno.serve(async (req) => {
     combined.set(agentAudioRemainder, 0);
     combined.set(raw, agentAudioRemainder.length);
 
-    const fullFrameBytes = Math.floor(combined.length / 160) * 160;
-    for (let i = 0; i < fullFrameBytes; i += 160) {
-      agentAudioQueue.push(uint8ToBase64(combined.subarray(i, i + 160)));
-      queuedAgentAudioFrames++;
+    const fullPacketBytes = Math.floor(combined.length / TELNYX_AGENT_PACKET_BYTES) * TELNYX_AGENT_PACKET_BYTES;
+    for (let i = 0; i < fullPacketBytes; i += TELNYX_AGENT_PACKET_BYTES) {
+      agentAudioQueue.push(uint8ToBase64(combined.subarray(i, i + TELNYX_AGENT_PACKET_BYTES)));
+      queuedAgentAudioPackets++;
+      queuedAgentAudioFrames += TELNYX_AGENT_PACKET_BYTES / TELNYX_PCMU_FRAME_BYTES;
     }
-    agentAudioRemainder = combined.slice(fullFrameBytes);
+    agentAudioRemainder = combined.slice(fullPacketBytes);
     if (agentAudioRemainder.length > 0) {
       agentRemainderFlushTimer = setTimeout(() => {
         if (agentAudioRemainder.length === 0) return;
-        const frameBytes = new Uint8Array(160);
-        frameBytes.set(agentAudioRemainder);
-        frameBytes.fill(0xff, agentAudioRemainder.length);
-        console.log(`[bridge ${conversationId}] padded terminal audio remainder ${agentAudioRemainder.length}B -> 160B with 0xff silence`);
-        agentAudioQueue.push(uint8ToBase64(frameBytes));
-        queuedAgentAudioFrames++;
+        const packetBytes = Math.ceil(agentAudioRemainder.length / TELNYX_PCMU_FRAME_BYTES) * TELNYX_PCMU_FRAME_BYTES;
+        const paddedPacket = new Uint8Array(packetBytes);
+        paddedPacket.set(agentAudioRemainder);
+        paddedPacket.fill(0xff, agentAudioRemainder.length);
+        console.log(`[bridge ${conversationId}] padded terminal audio remainder ${agentAudioRemainder.length}B -> ${packetBytes}B with 0xff silence`);
+        agentAudioQueue.push(uint8ToBase64(paddedPacket));
+        queuedAgentAudioPackets++;
+        queuedAgentAudioFrames += packetBytes / TELNYX_PCMU_FRAME_BYTES;
         agentAudioRemainder = new Uint8Array(0);
         if (agentAudioQueue.length > maxAgentQueueDepth) maxAgentQueueDepth = agentAudioQueue.length;
-        startAgentPacer();
+        flushAgentAudioQueue();
       }, 120) as unknown as number;
     }
     if (agentAudioQueue.length > maxAgentQueueDepth) maxAgentQueueDepth = agentAudioQueue.length;
-    startAgentPacer();
+    flushAgentAudioQueue();
   }
 
   console.log(`[bridge ${conversationId}] params bot=${botKind} direction=${callDirection || "-"} route=${samRoute} tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
