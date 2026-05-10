@@ -704,6 +704,27 @@ Deno.serve(async (req) => {
       })
       .eq("id", conversationId)
       .then(() => {});
+
+    // Persistent close diagnostic
+    (async () => {
+      try {
+        const avg = payloadBytesCount > 0 ? Math.round(payloadBytesSum / payloadBytesCount) : 0;
+        const minB = payloadBytesMin === Number.POSITIVE_INFINITY ? 0 : payloadBytesMin;
+        const closeText = `[BRIDGE_DIAGNOSTIC_CLOSE] queued=${queuedAgentAudioFrames} sent=${sentAgentAudioFrames} starvation=${starvationLogCount} non160=${nonStandardFrameCount} min_bytes=${minB} max_bytes=${payloadBytesMax} avg_bytes=${avg}`;
+        const { error: closeErr } = await supabase.from("transcript_entries").insert({
+          conversation_id: conversationId,
+          role: "agent",
+          text: closeText,
+        });
+        if (closeErr) {
+          console.error(`[bridge ${conversationId}] BRIDGE_DIAGNOSTIC_CLOSE insert error: ${closeErr.message} code=${closeErr.code} details=${closeErr.details}`);
+        } else {
+          console.log(`[bridge ${conversationId}] BRIDGE_DIAGNOSTIC_CLOSE inserted: ${closeText}`);
+        }
+      } catch (e) {
+        console.error(`[bridge ${conversationId}] BRIDGE_DIAGNOSTIC_CLOSE insert threw: ${(e as Error).message}`);
+      }
+    })();
   };
 
   const schedulePracticeHangup = (reason: string) => {
@@ -899,14 +920,21 @@ Deno.serve(async (req) => {
           for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
           pendingTelnyxAudio.length = 0;
           // Persistent diagnostic: write negotiated EL output format + audio path to transcript_entries
+          // role must be 'user' or 'agent' (CHECK constraint); use 'agent' with [BRIDGE_DIAGNOSTIC] prefix.
           try {
-            await supabase.from("transcript_entries").insert({
+            const diagText = `[BRIDGE_DIAGNOSTIC] output_format=${elAgentOutputAudioFormat || "unknown"} audio_path=${elOutputPassthrough ? "DIRECT_ULAW" : "PCM_CONVERSION"}`;
+            const { error: diagErr } = await supabase.from("transcript_entries").insert({
               conversation_id: conversationId,
-              role: "system",
-              text: `EL negotiated output format = ${elAgentOutputAudioFormat || "unknown"} | audio path = ${elOutputPassthrough ? "DIRECT_ULAW" : "PCM_CONVERSION"}`,
+              role: "agent",
+              text: diagText,
             });
+            if (diagErr) {
+              console.error(`[bridge ${conversationId}] BRIDGE_DIAGNOSTIC insert error: ${diagErr.message} code=${diagErr.code} details=${diagErr.details}`);
+            } else {
+              console.log(`[bridge ${conversationId}] BRIDGE_DIAGNOSTIC inserted: ${diagText}`);
+            }
           } catch (e) {
-            console.warn(`[bridge ${conversationId}] failed to persist EL diagnostic: ${(e as Error).message}`);
+            console.error(`[bridge ${conversationId}] BRIDGE_DIAGNOSTIC insert threw: ${(e as Error).message}`);
           }
           break;
         }
