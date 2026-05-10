@@ -986,7 +986,13 @@ Deno.serve(async (req) => {
 
         case "interruption": {
           const hadRecentCallerSpeech = Date.now() - lastForwardedSpeechAt < RECENT_SPEECH_WINDOW_MS;
-          console.log(`[bridge ${conversationId}] interruption from EL recentCallerSpeech=${hadRecentCallerSpeech}`);
+          console.log(`[bridge ${conversationId}] interruption from EL recentCallerSpeech=${hadRecentCallerSpeech} route=${samRoute}`);
+
+          if (samRoute === "outbound") {
+            // Sam outbound: never clear agent audio or send Telnyx clear on EL interruption.
+            console.log(`[bridge ${conversationId}] [no-clear] ignoring EL interruption for Sam outbound (queueDepth=${agentAudioQueue.length})`);
+            break;
+          }
 
           if (!hadRecentCallerSpeech) {
             agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + AGENT_SPEAK_TAIL_MS);
@@ -997,6 +1003,7 @@ Deno.serve(async (req) => {
           agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
           clearAgentAudioQueue("EL interruption");
           if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
+            console.log(`[bridge ${conversationId}] sending Telnyx clear (EL interruption, route=${samRoute})`);
             telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
           }
           break;
