@@ -143,9 +143,9 @@ function buildChrisConversationConfig(script: string) {
     tts: {
       model_id: "eleven_turbo_v2_5",
       voice_id: Deno.env.get("PRACTICE_CHRIS_VOICE_ID")?.trim() || DEFAULT_CHRIS_VOICE_ID,
-      stability: 0.59,
+      stability: 0.50,
       similarity_boost: 0.75,
-      style: 0.30,
+      style: 0.40,
       use_speaker_boost: true,
       speed: 1.0,
     },
@@ -278,9 +278,9 @@ function buildSamOutboundConversationConfig(calendarToolId?: string | null, firs
     tts: {
       model_id: "eleven_turbo_v2_5",
       voice_id: SAM_VOICE_ID,
-      stability: 0.59,
+      stability: 0.50,
       similarity_boost: 0.75,
-      style: 0.30,
+      style: 0.40,
       use_speaker_boost: true,
       speed: 1.0,
     },
@@ -936,12 +936,12 @@ Deno.serve(async (req) => {
 
     socket.onopen = () => {
       elConnecting = false;
-      console.log(`[bridge ${conversationId}] EL open — requesting pcm_16000 both directions`);
+      console.log(`[bridge ${conversationId}] EL open — requesting pcm_8000 output (no resample) and pcm_16000 input`);
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
       const conversationConfigOverride: Record<string, unknown> = {
         asr: { user_input_audio_format: "pcm_16000" },
-        // Prefer μ-law 8k passthrough so we can ship raw to Telnyx with no resample/re-encode.
-        tts: { agent_output_audio_format: "ulaw_8000" },
+        // Request pcm_8000 so we skip 16k->8k resampling entirely and avoid FIR/limiter crackle.
+        tts: { agent_output_audio_format: "pcm_8000" },
         conversation: {
           client_events: [
             "audio",
