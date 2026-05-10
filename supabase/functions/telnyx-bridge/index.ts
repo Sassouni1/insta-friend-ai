@@ -936,12 +936,12 @@ Deno.serve(async (req) => {
 
     socket.onopen = () => {
       elConnecting = false;
-      console.log(`[bridge ${conversationId}] EL open — requesting pcm_16000 both directions`);
+      console.log(`[bridge ${conversationId}] EL open — requesting pcm_8000 output (no resample) and pcm_16000 input`);
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
       const conversationConfigOverride: Record<string, unknown> = {
         asr: { user_input_audio_format: "pcm_16000" },
-        // Prefer μ-law 8k passthrough so we can ship raw to Telnyx with no resample/re-encode.
-        tts: { agent_output_audio_format: "ulaw_8000" },
+        // Request pcm_8000 so we skip 16k->8k resampling entirely and avoid FIR/limiter crackle.
+        tts: { agent_output_audio_format: "pcm_8000" },
         conversation: {
           client_events: [
             "audio",
