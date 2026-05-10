@@ -1108,27 +1108,33 @@ Deno.serve(async (req) => {
         if (!elSocket && !elConnecting) scheduleElSocketStart("first media");
 
         const muted = Date.now() < agentSpeakingUntil;
-        if (!muted && typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD) {
+        if (typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD) {
           inboundSpeechFrameCount++;
           if (!firstInboundSpeechAt) firstInboundSpeechAt = new Date().toISOString();
           lastForwardedSpeechAt = Date.now();
+          if (muted && samRoute === "outbound") {
+            console.log(`[bridge ${conversationId}] [no-gate] forwarding inbound caller frame while Sam is speaking (energy=${inboundEnergy})`);
+          }
         }
-        if (muted) {
+        if (muted && samRoute !== "outbound") {
+          // Practice (Chris) bot: keep barge-in / echo-gate behavior.
           const callerIsBargingIn = typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD;
           if (callerIsBargingIn) {
             agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
             clearAgentAudioQueue("caller barge-in");
             if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
+              console.log(`[bridge ${conversationId}] sending Telnyx clear (caller barge-in, route=${samRoute})`);
               telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
             }
             console.log(`[bridge ${conversationId}] barge-in: clearing agent audio and forwarding caller speech`);
           } else {
             if (telnyxMediaCount % 250 === 0) {
-              console.log(`[bridge ${conversationId}] echo-gate: dropping inbound silence/noise while agent speaking`);
+              console.log(`[bridge ${conversationId}] echo-gate: dropping inbound silence/noise while agent speaking (route=${samRoute})`);
             }
             break;
           }
         }
+        // Sam outbound: always forward caller audio to EL when EL is open. Never drop/mute.
         if (elReady && elSocket?.readyState === WebSocket.OPEN) {
           sendUserAudioToEL(payload);
         } else {
