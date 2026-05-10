@@ -439,7 +439,7 @@ Deno.serve(async (req) => {
 
   let agentId: string | null = null;
   try {
-    agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript, samRoute);
+    agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript, samRoute, callerName);
   } catch (err: any) {
     const reason = `outbound_setup_failed: ${err?.message || String(err)}`;
     await failOutbound(reason, "agent_or_tool_setup_failed");
