@@ -276,11 +276,13 @@ function buildSamOutboundConversationConfig(calendarToolId?: string | null, firs
       ],
     },
     tts: {
-      model_id: "eleven_flash_v2",
+      model_id: "eleven_turbo_v2_5",
       voice_id: SAM_VOICE_ID,
-      stability: 0.72,
+      stability: 0.59,
       similarity_boost: 0.75,
-      speed: 0.95,
+      style: 0.30,
+      use_speaker_boost: true,
+      speed: 1.0,
     },
   };
 }
