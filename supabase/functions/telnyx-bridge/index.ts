@@ -842,7 +842,13 @@ Deno.serve(async (req) => {
           const b64 = msg.audio_event?.audio_base_64;
           if (!b64) break;
           if (suppressAgentAudioUntilUser && !firstUserTranscriptSeen) {
-            break;
+            if (samRoute === "outbound") {
+              // Sam outbound: never suppress agent audio.
+              console.log(`[bridge ${conversationId}] [no-gate] ignoring suppressAgentAudioUntilUser for Sam outbound`);
+            } else {
+              console.log(`[bridge ${conversationId}] dropping agent audio: suppressAgentAudioUntilUser`);
+              break;
+            }
           }
           if (!telnyxStreamId) {
             console.log(`[bridge ${conversationId}] dropping EL audio — no Telnyx stream_id yet`);
@@ -884,7 +890,7 @@ Deno.serve(async (req) => {
           if (text) {
             if (!firstUserTranscriptSeen) {
               agentResponseCountBeforeUser++;
-              if (agentResponseCountBeforeUser > 1) {
+              if (agentResponseCountBeforeUser > 1 && samRoute !== "outbound") {
                 suppressAgentAudioUntilUser = true;
                 console.warn(`[bridge ${conversationId}] suppressing repeated agent opener until user transcript`);
                 break;
@@ -980,7 +986,13 @@ Deno.serve(async (req) => {
 
         case "interruption": {
           const hadRecentCallerSpeech = Date.now() - lastForwardedSpeechAt < RECENT_SPEECH_WINDOW_MS;
-          console.log(`[bridge ${conversationId}] interruption from EL recentCallerSpeech=${hadRecentCallerSpeech}`);
+          console.log(`[bridge ${conversationId}] interruption from EL recentCallerSpeech=${hadRecentCallerSpeech} route=${samRoute}`);
+
+          if (samRoute === "outbound") {
+            // Sam outbound: never clear agent audio or send Telnyx clear on EL interruption.
+            console.log(`[bridge ${conversationId}] [no-clear] ignoring EL interruption for Sam outbound (queueDepth=${agentAudioQueue.length})`);
+            break;
+          }
 
           if (!hadRecentCallerSpeech) {
             agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + AGENT_SPEAK_TAIL_MS);
@@ -991,6 +1003,7 @@ Deno.serve(async (req) => {
           agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
           clearAgentAudioQueue("EL interruption");
           if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
+            console.log(`[bridge ${conversationId}] sending Telnyx clear (EL interruption, route=${samRoute})`);
             telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
           }
           break;
@@ -1095,27 +1108,33 @@ Deno.serve(async (req) => {
         if (!elSocket && !elConnecting) scheduleElSocketStart("first media");
 
         const muted = Date.now() < agentSpeakingUntil;
-        if (!muted && typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD) {
+        if (typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD) {
           inboundSpeechFrameCount++;
           if (!firstInboundSpeechAt) firstInboundSpeechAt = new Date().toISOString();
           lastForwardedSpeechAt = Date.now();
+          if (muted && samRoute === "outbound") {
+            console.log(`[bridge ${conversationId}] [no-gate] forwarding inbound caller frame while Sam is speaking (energy=${inboundEnergy})`);
+          }
         }
-        if (muted) {
+        if (muted && samRoute !== "outbound") {
+          // Practice (Chris) bot: keep barge-in / echo-gate behavior.
           const callerIsBargingIn = typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD;
           if (callerIsBargingIn) {
             agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
             clearAgentAudioQueue("caller barge-in");
             if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
+              console.log(`[bridge ${conversationId}] sending Telnyx clear (caller barge-in, route=${samRoute})`);
               telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
             }
             console.log(`[bridge ${conversationId}] barge-in: clearing agent audio and forwarding caller speech`);
           } else {
             if (telnyxMediaCount % 250 === 0) {
-              console.log(`[bridge ${conversationId}] echo-gate: dropping inbound silence/noise while agent speaking`);
+              console.log(`[bridge ${conversationId}] echo-gate: dropping inbound silence/noise while agent speaking (route=${samRoute})`);
             }
             break;
           }
         }
+        // Sam outbound: always forward caller audio to EL when EL is open. Never drop/mute.
         if (elReady && elSocket?.readyState === WebSocket.OPEN) {
           sendUserAudioToEL(payload);
         } else {
