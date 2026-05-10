@@ -875,10 +875,11 @@ Deno.serve(async (req) => {
           const meta = msg.conversation_initiation_metadata_event || {};
           elUserInputAudioFormat = meta.user_input_audio_format || null;
           elAgentOutputAudioFormat = meta.agent_output_audio_format || null;
+          elOutputPassthrough = isMulaw8000(elAgentOutputAudioFormat);
           elReady = true;
           console.log(`[bridge ${conversationId}] EL META: ${JSON.stringify(msg).slice(0, 800)}`);
           console.log(
-            `[bridge ${conversationId}] EL ready — negotiated in=${elUserInputAudioFormat || "unknown"} out=${elAgentOutputAudioFormat || "unknown"}; flushing ${pendingTelnyxAudio.length} buffered frames`,
+            `[bridge ${conversationId}] EL ready — negotiated in=${elUserInputAudioFormat || "unknown"} out=${elAgentOutputAudioFormat || "unknown"} passthrough=${elOutputPassthrough ? "DIRECT_ULAW" : "PCM_CONVERSION"}; flushing ${pendingTelnyxAudio.length} buffered frames`,
           );
           for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
           pendingTelnyxAudio.length = 0;
