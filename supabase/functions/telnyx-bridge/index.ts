@@ -663,6 +663,10 @@ Deno.serve(async (req) => {
     console.log(`[bridge ${conversationId}] closing: ${reason}`);
     console.log(`[bridge ${conversationId}] calendar tool calls=${calendarToolCallCount} errors=${calendarToolErrorCount}`);
     console.log(`[bridge ${conversationId}] agent audio totals queued=${queuedAgentAudioFrames} sent=${sentAgentAudioFrames} maxDepth=${maxAgentQueueDepth} dropped=${droppedAgentAudioFrames}`);
+    {
+      const avg = payloadBytesCount > 0 ? Math.round(payloadBytesSum / payloadBytesCount) : 0;
+      console.log(`[bridge ${conversationId}] payload bytes final min=${payloadBytesMin === Number.POSITIVE_INFINITY ? "-" : payloadBytesMin} max=${payloadBytesMax} avg=${avg} count=${payloadBytesCount} nonStandard=${nonStandardFrameCount} starvations=${starvationLogCount} passthrough=${elOutputPassthrough} elFormat=${elAgentOutputAudioFormat}`);
+    }
     clearTimeout(startTimer);
     if (elStartTimer !== null) clearTimeout(elStartTimer);
     stopAgentPacer();
