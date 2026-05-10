@@ -704,6 +704,27 @@ Deno.serve(async (req) => {
       })
       .eq("id", conversationId)
       .then(() => {});
+
+    // Persistent close diagnostic
+    (async () => {
+      try {
+        const avg = payloadBytesCount > 0 ? Math.round(payloadBytesSum / payloadBytesCount) : 0;
+        const minB = payloadBytesMin === Number.POSITIVE_INFINITY ? 0 : payloadBytesMin;
+        const closeText = `[BRIDGE_DIAGNOSTIC_CLOSE] queued=${queuedAgentAudioFrames} sent=${sentAgentAudioFrames} starvation=${starvationLogCount} non160=${nonStandardFrameCount} min_bytes=${minB} max_bytes=${payloadBytesMax} avg_bytes=${avg}`;
+        const { error: closeErr } = await supabase.from("transcript_entries").insert({
+          conversation_id: conversationId,
+          role: "agent",
+          text: closeText,
+        });
+        if (closeErr) {
+          console.error(`[bridge ${conversationId}] BRIDGE_DIAGNOSTIC_CLOSE insert error: ${closeErr.message} code=${closeErr.code} details=${closeErr.details}`);
+        } else {
+          console.log(`[bridge ${conversationId}] BRIDGE_DIAGNOSTIC_CLOSE inserted: ${closeText}`);
+        }
+      } catch (e) {
+        console.error(`[bridge ${conversationId}] BRIDGE_DIAGNOSTIC_CLOSE insert threw: ${(e as Error).message}`);
+      }
+    })();
   };
 
   const schedulePracticeHangup = (reason: string) => {
