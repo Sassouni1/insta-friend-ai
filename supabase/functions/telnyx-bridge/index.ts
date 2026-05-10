@@ -996,7 +996,8 @@ Deno.serve(async (req) => {
           // Persistent diagnostic: write negotiated EL output format + audio path to transcript_entries
           // role must be 'user' or 'agent' (CHECK constraint); use 'agent' with [BRIDGE_DIAGNOSTIC] prefix.
           try {
-            const diagText = `[BRIDGE_DIAGNOSTIC] output_format=${elAgentOutputAudioFormat || "unknown"} audio_path=${elOutputPassthrough ? "DIRECT_ULAW" : "PCM_CONVERSION"}`;
+            const conversionTag = elOutputPassthrough ? "passthrough_ulaw" : "resampled_filtered_limited";
+            const diagText = `[BRIDGE_DIAGNOSTIC] output_format=${elAgentOutputAudioFormat || "unknown"} audio_path=${elOutputPassthrough ? "DIRECT_ULAW" : "PCM_CONVERSION"} conversion=${conversionTag}`;
             const { error: diagErr } = await supabase.from("transcript_entries").insert({
               conversation_id: conversationId,
               role: "agent",
