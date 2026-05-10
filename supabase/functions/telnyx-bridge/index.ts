@@ -536,8 +536,8 @@ Deno.serve(async (req) => {
   const OUTBOUND_FIRST_SPEAK_DELAY_MS = 2500;
   const pendingTelnyxAudio: string[] = [];
 
-  // Outbound (EL -> Telnyx) audio queue: send 100ms PCMU packets and let Telnyx jitter-buffer playback.
-  // Serverless setInterval pacing at 20ms can drift under load and sounds exactly like a bad phone connection.
+  // Outbound (EL -> Telnyx) audio queue: convert to clean, low-headroom PCMU and send compact RTP payloads.
+  // The "breaking up" symptom is usually clipping/codec roughness, not speech timing.
   const agentAudioQueue: string[] = [];
   let agentAudioRemainder = new Uint8Array(0);
   let queuedAgentAudioPackets = 0;
@@ -609,7 +609,7 @@ Deno.serve(async (req) => {
         agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + framesInPacket * 20 + AGENT_SPEAK_TAIL_MS);
         if (!firstAgentAudioSent) {
           firstAgentAudioSent = true;
-          console.log(`[bridge ${conversationId}] FIRST agent audio packet sent to Telnyx (buffered PCMU 8k, rawBytes=${rawLen}, frames=${framesInPacket}, passthrough=${elOutputPassthrough})`);
+        console.log(`[bridge ${conversationId}] FIRST agent audio packet sent to Telnyx (clean PCMU 8k, rawBytes=${rawLen}, frames=${framesInPacket}, passthrough=${elOutputPassthrough})`);
         }
         if (sentAgentAudioFrames % 250 === 0) {
           const avg = payloadBytesCount > 0 ? Math.round(payloadBytesSum / payloadBytesCount) : 0;
@@ -638,8 +638,8 @@ Deno.serve(async (req) => {
     }
     stopAgentRemainderFlushTimer();
 
-    // Telnyx accepts 20ms to 30s RTP payload chunks. We packetize into 100ms chunks:
-    // fewer websocket sends, no serverless 20ms timer jitter, still low latency.
+    // Telnyx accepts 20ms to 30s RTP payload chunks. Keep packets compact:
+    // large bursts can sound like a weak/breaking phone connection on some carriers.
     // Do not pad every EL chunk:
     // ElevenLabs often sends arbitrary byte counts, and per-chunk silence padding creates
     // tiny repeated dropouts that sound like crackle/bad connection. Carry leftovers into
