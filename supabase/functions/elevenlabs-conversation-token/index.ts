@@ -207,9 +207,9 @@ const SAM_CONVERSATION_CONFIG = {
   tts: {
     model_id: "eleven_turbo_v2_5",
     voice_id: FALLBACK_VOICE_ID,
-    stability: 0.59,
+    stability: 0.50,
     similarity_boost: 0.75,
-    style: 0.30,
+    style: 0.40,
     use_speaker_boost: true,
     speed: 1.0,
   },

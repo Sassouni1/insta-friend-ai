@@ -143,9 +143,9 @@ function buildChrisConversationConfig(script: string) {
     tts: {
       model_id: "eleven_turbo_v2_5",
       voice_id: Deno.env.get("PRACTICE_CHRIS_VOICE_ID")?.trim() || DEFAULT_CHRIS_VOICE_ID,
-      stability: 0.59,
+      stability: 0.50,
       similarity_boost: 0.75,
-      style: 0.30,
+      style: 0.40,
       use_speaker_boost: true,
       speed: 1.0,
     },
@@ -278,9 +278,9 @@ function buildSamOutboundConversationConfig(calendarToolId?: string | null, firs
     tts: {
       model_id: "eleven_turbo_v2_5",
       voice_id: SAM_VOICE_ID,
-      stability: 0.59,
+      stability: 0.50,
       similarity_boost: 0.75,
-      style: 0.30,
+      style: 0.40,
       use_speaker_boost: true,
       speed: 1.0,
     },
