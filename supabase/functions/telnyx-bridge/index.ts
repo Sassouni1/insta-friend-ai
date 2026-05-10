@@ -898,6 +898,16 @@ Deno.serve(async (req) => {
           );
           for (const buf of pendingTelnyxAudio) sendUserAudioToEL(buf);
           pendingTelnyxAudio.length = 0;
+          // Persistent diagnostic: write negotiated EL output format + audio path to transcript_entries
+          try {
+            await supabase.from("transcript_entries").insert({
+              conversation_id: conversationId,
+              role: "system",
+              text: `EL negotiated output format = ${elAgentOutputAudioFormat || "unknown"} | audio path = ${elOutputPassthrough ? "DIRECT_ULAW" : "PCM_CONVERSION"}`,
+            });
+          } catch (e) {
+            console.warn(`[bridge ${conversationId}] failed to persist EL diagnostic: ${(e as Error).message}`);
+          }
           break;
         }
 
