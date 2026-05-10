@@ -826,7 +826,8 @@ Deno.serve(async (req) => {
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
       const conversationConfigOverride: Record<string, unknown> = {
         asr: { user_input_audio_format: "pcm_16000" },
-        tts: { agent_output_audio_format: "pcm_16000" },
+        // Prefer μ-law 8k passthrough so we can ship raw to Telnyx with no resample/re-encode.
+        tts: { agent_output_audio_format: "ulaw_8000" },
         conversation: {
           client_events: [
             "audio",
