@@ -890,7 +890,7 @@ Deno.serve(async (req) => {
           if (text) {
             if (!firstUserTranscriptSeen) {
               agentResponseCountBeforeUser++;
-              if (agentResponseCountBeforeUser > 1) {
+              if (agentResponseCountBeforeUser > 1 && samRoute !== "outbound") {
                 suppressAgentAudioUntilUser = true;
                 console.warn(`[bridge ${conversationId}] suppressing repeated agent opener until user transcript`);
                 break;
