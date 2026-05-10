@@ -857,26 +857,26 @@ Deno.serve(async (req) => {
 
   function transformELAudioForTelnyx(audioB64: string): string {
     const sourceFormat = elAgentOutputAudioFormat || "pcm_16000";
-    if (isMulaw8000(sourceFormat)) return audioB64;
+    if (isMulaw8000(sourceFormat)) {
+      const pcm = mulawToPcm16(base64ToUint8(audioB64));
+      return uint8ToBase64(pcm16ToMulaw(conditionTelephonyPcm(pcm)));
+    }
 
     if (isPcm8000(sourceFormat)) {
       const pcm8raw = base64ToInt16(audioB64);
-      // Apply soft limiter only (no resample needed)
-      const pcm8 = new Int16Array(pcm8raw.length);
-      for (let i = 0; i < pcm8raw.length; i++) pcm8[i] = softLimitSample(pcm8raw[i]);
-      return uint8ToBase64(pcm16ToMulaw(pcm8));
+      return uint8ToBase64(pcm16ToMulaw(conditionTelephonyPcm(pcm8raw)));
     }
 
     if (isPcm16000(sourceFormat)) {
       const pcm16 = base64ToInt16(audioB64);
       const pcm8 = downsample16to8Filtered(pcm16);
-      return uint8ToBase64(pcm16ToMulaw(pcm8));
+      return uint8ToBase64(pcm16ToMulaw(conditionTelephonyPcm(pcm8)));
     }
 
     console.warn(`[bridge ${conversationId}] unknown EL output format ${sourceFormat}, defaulting EL→Telnyx to pcm_16000 -> PCMU (filtered)`);
     const pcm16 = base64ToInt16(audioB64);
     const pcm8 = downsample16to8Filtered(pcm16);
-    return uint8ToBase64(pcm16ToMulaw(pcm8));
+    return uint8ToBase64(pcm16ToMulaw(conditionTelephonyPcm(pcm8)));
   }
 
   function sendUserAudioToEL(mulawB64: string) {
