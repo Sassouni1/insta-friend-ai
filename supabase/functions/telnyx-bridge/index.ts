@@ -332,7 +332,7 @@ async function ensureAgentId(apiKey: string, name: string, conversationConfig?: 
   return agentId;
 }
 
-async function getOrFetchAgentId(apiKey: string, botKind: string, script: string, samRoute: "inbound" | "outbound"): Promise<string | null> {
+async function getOrFetchAgentId(apiKey: string, botKind: string, script: string, samRoute: "inbound" | "outbound", callerName: string = ""): Promise<string | null> {
   if (botKind === "chris") {
     const envAgentId = Deno.env.get("PRACTICE_CHRIS_AGENT_ID")?.trim();
     if (envAgentId) return envAgentId;
@@ -344,10 +344,15 @@ async function getOrFetchAgentId(apiKey: string, botKind: string, script: string
     if (!calendarToolId) {
       console.warn(`[telnyx-bridge] ${CALENDAR_TOOL_NAME} unavailable; building outbound agent without tool_ids so Sam can still speak`);
     }
+    const firstName = usableFirstName(callerName);
+    const firstMessage = firstName
+      ? `Hey — this is Sam with Infinite Hair. Is this ${firstName}?`
+      : "Hey — this is Sam with Infinite Hair. Did I catch you at an okay time?";
+    console.log(`[telnyx-bridge] outbound first_message: "${firstMessage}" (callerName="${callerName}")`);
     const outboundAgent = await ensureAgentId(
       apiKey,
       SAM_OUTBOUND_AGENT_NAME,
-      buildSamOutboundConversationConfig(calendarToolId),
+      buildSamOutboundConversationConfig(calendarToolId, firstMessage),
     );
     if (!outboundAgent) {
       throw new Error(`outbound_setup_failed: agent "${SAM_OUTBOUND_AGENT_NAME}" could not be created/fetched`);
