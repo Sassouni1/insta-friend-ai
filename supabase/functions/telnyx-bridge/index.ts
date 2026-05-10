@@ -1054,7 +1054,7 @@ Deno.serve(async (req) => {
           }
           enqueueAgentAudioFromEL(b64);
           if (queuedAgentAudioFrames % 200 === 0) {
-            console.log(`[bridge ${conversationId}] agent audio counters queued=${queuedAgentAudioFrames} sent=${sentAgentAudioFrames} maxDepth=${maxAgentQueueDepth} dropped=${droppedAgentAudioFrames}`);
+            console.log(`[bridge ${conversationId}] agent audio counters queuedFrames=${queuedAgentAudioFrames} sentFrames=${sentAgentAudioFrames} queuedPackets=${queuedAgentAudioPackets} sentPackets=${sentAgentAudioPackets} maxDepth=${maxAgentQueueDepth} droppedPackets=${droppedAgentAudioPackets}`);
           }
           break;
         }
