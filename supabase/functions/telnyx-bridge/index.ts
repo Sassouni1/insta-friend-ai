@@ -768,24 +768,98 @@ Deno.serve(async (req) => {
     return int16ToBase64(upsample8to16(pcm8));
   }
 
+  // 23-tap windowed-sinc low-pass FIR, fc ≈ 3.4 kHz @ 16 kHz, Hamming window.
+  // Used as anti-alias filter before 2:1 decimation (16k -> 8k) to reduce
+  // aliasing artifacts that the naive 2-sample average produced.
+  const LPF_FIR_16K: Float32Array = (() => {
+    const N = 23;
+    const fc = 3400 / 16000; // normalized cutoff (cycles/sample)
+    const M = N - 1;
+    const taps = new Float32Array(N);
+    let sum = 0;
+    for (let n = 0; n < N; n++) {
+      const k = n - M / 2;
+      const sinc = k === 0 ? 2 * fc : Math.sin(2 * Math.PI * fc * k) / (Math.PI * k);
+      const win = 0.54 - 0.46 * Math.cos((2 * Math.PI * n) / M); // Hamming
+      taps[n] = sinc * win;
+      sum += taps[n];
+    }
+    // normalize for unity DC gain
+    for (let n = 0; n < N; n++) taps[n] /= sum;
+    return taps;
+  })();
+  // Filter-state carries last (N-1) samples across chunks to avoid edge clicks
+  const LPF_STATE_LEN = LPF_FIR_16K.length - 1;
+  let lpfState16k: Int16Array = new Int16Array(LPF_STATE_LEN);
+
+  function softLimitSample(s: number): number {
+    // Very light limiter: linear below threshold, soft-knee above to avoid clipping.
+    // No gain boost — pure protective ceiling near full scale.
+    const LIM = 30000;
+    const MAX = 32700;
+    const range = MAX - LIM;
+    if (s > LIM) {
+      const x = (s - LIM) / range;
+      return Math.round(LIM + range * Math.tanh(x));
+    }
+    if (s < -LIM) {
+      const x = (-s - LIM) / range;
+      return -Math.round(LIM + range * Math.tanh(x));
+    }
+    return s;
+  }
+
+  function downsample16to8Filtered(pcm16: Int16Array): Int16Array {
+    const taps = LPF_FIR_16K;
+    const N = taps.length;
+    const stateLen = LPF_STATE_LEN;
+    // Build buffer: [previous state | new samples]
+    const buf = new Int16Array(stateLen + pcm16.length);
+    buf.set(lpfState16k, 0);
+    buf.set(pcm16, stateLen);
+    // Decimate by 2: produce one output per 2 input samples; output length = floor(pcm16.length / 2)
+    const outLen = Math.floor(pcm16.length / 2);
+    const out = new Int16Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      // Center sample in original 16k stream is at index (stateLen - (N-1)/2) + 2*i + (N-1)/2 = stateLen + 2*i
+      // We need taps applied to buf[stateLen + 2*i + (k - (N-1)/2)] for k=0..N-1
+      // i.e. starting at buf[2*i + stateLen - (N-1)/2] = buf[2*i + stateLen - (N-1)/2]
+      const start = 2 * i + (stateLen - (N - 1) / 2 | 0);
+      let acc = 0;
+      for (let k = 0; k < N; k++) {
+        const idx = start + k;
+        if (idx >= 0 && idx < buf.length) acc += taps[k] * buf[idx];
+      }
+      const limited = softLimitSample(acc | 0);
+      out[i] = Math.max(-32768, Math.min(32767, limited));
+    }
+    // Save trailing samples for next chunk
+    const tail = buf.subarray(buf.length - stateLen);
+    lpfState16k = new Int16Array(tail);
+    return out;
+  }
+
   function transformELAudioForTelnyx(audioB64: string): string {
     const sourceFormat = elAgentOutputAudioFormat || "pcm_16000";
     if (isMulaw8000(sourceFormat)) return audioB64;
 
     if (isPcm8000(sourceFormat)) {
-      const pcm8 = base64ToInt16(audioB64);
+      const pcm8raw = base64ToInt16(audioB64);
+      // Apply soft limiter only (no resample needed)
+      const pcm8 = new Int16Array(pcm8raw.length);
+      for (let i = 0; i < pcm8raw.length; i++) pcm8[i] = softLimitSample(pcm8raw[i]);
       return uint8ToBase64(pcm16ToMulaw(pcm8));
     }
 
     if (isPcm16000(sourceFormat)) {
       const pcm16 = base64ToInt16(audioB64);
-      const pcm8 = downsample16to8(pcm16);
+      const pcm8 = downsample16to8Filtered(pcm16);
       return uint8ToBase64(pcm16ToMulaw(pcm8));
     }
 
-    console.warn(`[bridge ${conversationId}] unknown EL output format ${sourceFormat}, defaulting EL→Telnyx to pcm_16000 -> PCMU`);
+    console.warn(`[bridge ${conversationId}] unknown EL output format ${sourceFormat}, defaulting EL→Telnyx to pcm_16000 -> PCMU (filtered)`);
     const pcm16 = base64ToInt16(audioB64);
-    const pcm8 = downsample16to8(pcm16);
+    const pcm8 = downsample16to8Filtered(pcm16);
     return uint8ToBase64(pcm16ToMulaw(pcm8));
   }
 
