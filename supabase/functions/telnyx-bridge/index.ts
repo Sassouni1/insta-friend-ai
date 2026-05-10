@@ -842,7 +842,13 @@ Deno.serve(async (req) => {
           const b64 = msg.audio_event?.audio_base_64;
           if (!b64) break;
           if (suppressAgentAudioUntilUser && !firstUserTranscriptSeen) {
-            break;
+            if (samRoute === "outbound") {
+              // Sam outbound: never suppress agent audio.
+              console.log(`[bridge ${conversationId}] [no-gate] ignoring suppressAgentAudioUntilUser for Sam outbound`);
+            } else {
+              console.log(`[bridge ${conversationId}] dropping agent audio: suppressAgentAudioUntilUser`);
+              break;
+            }
           }
           if (!telnyxStreamId) {
             console.log(`[bridge ${conversationId}] dropping EL audio — no Telnyx stream_id yet`);
