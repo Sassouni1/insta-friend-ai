@@ -825,6 +825,16 @@ Deno.serve(async (req) => {
     return s;
   }
 
+  function conditionTelephonyPcm(pcm: Int16Array): Int16Array {
+    // ElevenLabs voices can hit μ-law/PSTN too hot. Scale before encoding so the phone leg
+    // has headroom; this targets the audible "crackle/breaking up" while preserving cadence.
+    const out = new Int16Array(pcm.length);
+    for (let i = 0; i < pcm.length; i++) {
+      out[i] = softLimitSample(Math.round(pcm[i] * TELEPHONY_OUTPUT_GAIN));
+    }
+    return out;
+  }
+
   function downsample16to8Filtered(pcm16: Int16Array): Int16Array {
     const taps = LPF_FIR_16K;
     const N = taps.length;
