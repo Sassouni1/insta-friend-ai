@@ -616,8 +616,10 @@ Deno.serve(async (req) => {
     bridgeClosed = true;
     console.log(`[bridge ${conversationId}] closing: ${reason}`);
     console.log(`[bridge ${conversationId}] calendar tool calls=${calendarToolCallCount} errors=${calendarToolErrorCount}`);
+    console.log(`[bridge ${conversationId}] agent audio totals queued=${queuedAgentAudioFrames} sent=${sentAgentAudioFrames} maxDepth=${maxAgentQueueDepth} dropped=${droppedAgentAudioFrames}`);
     clearTimeout(startTimer);
     if (elStartTimer !== null) clearTimeout(elStartTimer);
+    stopAgentPacer();
     try {
       if (telnyxSocket.readyState < 2) telnyxSocket.close();
     } catch {}
