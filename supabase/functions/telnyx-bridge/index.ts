@@ -947,12 +947,12 @@ Deno.serve(async (req) => {
 
     socket.onopen = () => {
       elConnecting = false;
-      console.log(`[bridge ${conversationId}] EL open — requesting pcm_8000 output (no resample) and pcm_16000 input`);
+      console.log(`[bridge ${conversationId}] EL open — requesting native ulaw_8000 output for phone passthrough and pcm_16000 input`);
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
       const conversationConfigOverride: Record<string, unknown> = {
         asr: { user_input_audio_format: "pcm_16000" },
-        // Request pcm_8000 so we skip 16k->8k resampling entirely and avoid FIR/limiter crackle.
-        tts: { agent_output_audio_format: "pcm_8000" },
+        // Runtime overrides do not always control this field, so the agent config above also pins it.
+        tts: { agent_output_audio_format: TELEPHONY_AGENT_OUTPUT_FORMAT },
         conversation: {
           client_events: [
             "audio",
@@ -1011,7 +1011,7 @@ Deno.serve(async (req) => {
           // Persistent diagnostic: write negotiated EL output format + audio path to transcript_entries
           // role must be 'user' or 'agent' (CHECK constraint); use 'agent' with [BRIDGE_DIAGNOSTIC] prefix.
           try {
-            const conversionTag = elOutputPassthrough ? "passthrough_ulaw" : "resampled_filtered_limited";
+            const conversionTag = elOutputPassthrough ? "passthrough_ulaw" : isPcm8000(elAgentOutputAudioFormat) ? "pcm8_mulaw_encode" : "resampled_filtered_limited";
             const diagText = `[BRIDGE_DIAGNOSTIC] output_format=${elAgentOutputAudioFormat || "unknown"} audio_path=${elOutputPassthrough ? "DIRECT_ULAW" : "PCM_CONVERSION"} conversion=${conversionTag}`;
             const { error: diagErr } = await supabase.from("transcript_entries").insert({
               conversation_id: conversationId,
