@@ -515,6 +515,92 @@ Deno.serve(async (req) => {
   const OUTBOUND_FIRST_SPEAK_DELAY_MS = 2500;
   const pendingTelnyxAudio: string[] = [];
 
+  // Outbound (EL -> Telnyx) audio pacer: 160-byte PCMU frames every 20ms.
+  const agentAudioQueue: string[] = [];
+  let queuedAgentAudioFrames = 0;
+  let sentAgentAudioFrames = 0;
+  let maxAgentQueueDepth = 0;
+  let droppedAgentAudioFrames = 0;
+  let agentPacerTimer: number | null = null;
+
+  function stopAgentPacer() {
+    if (agentPacerTimer !== null) {
+      clearInterval(agentPacerTimer);
+      agentPacerTimer = null;
+    }
+  }
+
+  function clearAgentAudioQueue(reason: string) {
+    if (agentAudioQueue.length > 0) {
+      droppedAgentAudioFrames += agentAudioQueue.length;
+      console.log(`[bridge ${conversationId}] clearing agent audio queue depth=${agentAudioQueue.length} reason=${reason}`);
+      agentAudioQueue.length = 0;
+    }
+    stopAgentPacer();
+  }
+
+  function startAgentPacer() {
+    if (agentPacerTimer !== null) return;
+    agentPacerTimer = setInterval(() => {
+      if (bridgeClosed) { stopAgentPacer(); return; }
+      if (agentAudioQueue.length === 0) { stopAgentPacer(); return; }
+      if (!telnyxStreamId || telnyxSocket.readyState !== WebSocket.OPEN) {
+        const dropped = agentAudioQueue.length;
+        droppedAgentAudioFrames += dropped;
+        agentAudioQueue.length = 0;
+        console.warn(`[bridge ${conversationId}] dropping ${dropped} agent audio frames — no stream_id or socket closed`);
+        stopAgentPacer();
+        return;
+      }
+      const frame = agentAudioQueue.shift()!;
+      try {
+        telnyxSocket.send(JSON.stringify({
+          event: "media",
+          stream_id: telnyxStreamId,
+          media: { payload: frame },
+        }));
+        sentAgentAudioFrames++;
+        agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + 20 + AGENT_SPEAK_TAIL_MS);
+        if (!firstAgentAudioSent) {
+          firstAgentAudioSent = true;
+          console.log(`[bridge ${conversationId}] FIRST agent audio frame sent to Telnyx (paced 20ms PCMU 8k)`);
+        }
+      } catch (err) {
+        console.error(`[bridge ${conversationId}] pacer send error`, err);
+      }
+    }, 20) as unknown as number;
+  }
+
+  function enqueueAgentAudioFromEL(audioB64FromEL: string) {
+    if (!telnyxStreamId) {
+      console.log(`[bridge ${conversationId}] dropping EL audio — no Telnyx stream_id yet`);
+      return;
+    }
+    const telnyxPayload = transformELAudioForTelnyx(audioB64FromEL);
+    let raw: Uint8Array;
+    try {
+      raw = base64ToUint8(telnyxPayload);
+    } catch (err) {
+      console.error(`[bridge ${conversationId}] failed to decode transformed EL audio`, err);
+      return;
+    }
+    for (let i = 0; i < raw.length; i += 160) {
+      const slice = raw.subarray(i, Math.min(i + 160, raw.length));
+      let frameBytes: Uint8Array;
+      if (slice.length === 160) {
+        frameBytes = slice;
+      } else {
+        frameBytes = new Uint8Array(160);
+        frameBytes.set(slice);
+        frameBytes.fill(0xff, slice.length); // mu-law silence
+      }
+      agentAudioQueue.push(uint8ToBase64(frameBytes));
+      queuedAgentAudioFrames++;
+    }
+    if (agentAudioQueue.length > maxAgentQueueDepth) maxAgentQueueDepth = agentAudioQueue.length;
+    startAgentPacer();
+  }
+
   console.log(`[bridge ${conversationId}] params bot=${botKind} direction=${callDirection || "-"} route=${samRoute} tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
 
   let connectedAt: number | null = null;
@@ -530,8 +616,10 @@ Deno.serve(async (req) => {
     bridgeClosed = true;
     console.log(`[bridge ${conversationId}] closing: ${reason}`);
     console.log(`[bridge ${conversationId}] calendar tool calls=${calendarToolCallCount} errors=${calendarToolErrorCount}`);
+    console.log(`[bridge ${conversationId}] agent audio totals queued=${queuedAgentAudioFrames} sent=${sentAgentAudioFrames} maxDepth=${maxAgentQueueDepth} dropped=${droppedAgentAudioFrames}`);
     clearTimeout(startTimer);
     if (elStartTimer !== null) clearTimeout(elStartTimer);
+    stopAgentPacer();
     try {
       if (telnyxSocket.readyState < 2) telnyxSocket.close();
     } catch {}
@@ -767,22 +855,9 @@ Deno.serve(async (req) => {
               console.log(`[bridge ${conversationId}] EL audio first 32 bytes hex: ${hex} (b64 len=${b64.length}, raw len=${raw.length})`);
             } catch {}
           }
-
-          const telnyxPayload = transformELAudioForTelnyx(b64);
-          telnyxSocket.send(JSON.stringify({
-            event: "media",
-            stream_id: telnyxStreamId,
-            media: { payload: telnyxPayload },
-          }));
-          try {
-            const playoutMs = Math.ceil((atob(telnyxPayload).length / 8000) * 1000);
-            agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + playoutMs + AGENT_SPEAK_TAIL_MS);
-          } catch {}
-          if (!firstAgentAudioSent) {
-            firstAgentAudioSent = true;
-            console.log(
-              `[bridge ${conversationId}] FIRST agent audio sent to Telnyx (${elAgentOutputAudioFormat || "pcm_16000"} -> Telnyx PCMU 8k)`,
-            );
+          enqueueAgentAudioFromEL(b64);
+          if (queuedAgentAudioFrames % 200 === 0) {
+            console.log(`[bridge ${conversationId}] agent audio counters queued=${queuedAgentAudioFrames} sent=${sentAgentAudioFrames} maxDepth=${maxAgentQueueDepth} dropped=${droppedAgentAudioFrames}`);
           }
           break;
         }
@@ -914,6 +989,7 @@ Deno.serve(async (req) => {
           }
 
           agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
+          clearAgentAudioQueue("EL interruption");
           if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
             telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
           }
@@ -1028,6 +1104,7 @@ Deno.serve(async (req) => {
           const callerIsBargingIn = typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD;
           if (callerIsBargingIn) {
             agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
+            clearAgentAudioQueue("caller barge-in");
             if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
               telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
             }
