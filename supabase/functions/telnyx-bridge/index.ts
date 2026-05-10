@@ -26,25 +26,23 @@ You are calling a real lead who opted in for hair systems or hair loss help. The
 
 Critical call-state rules:
 - This is an outbound call. Do not use inbound language like "thanks for reaching out."
-- Your configured first message already said: "Hey — this is Sam with Infinite Hair."
-- After the caller responds, confirm the person naturally: "Am I speaking with {{first_name}}?"
-- If {{first_name}} is "there" or unavailable, confirm naturally: "Am I speaking with the person who was looking into hair systems?"
-- Once the caller confirms identity, never restart the opener and never say "Hey — is this {{first_name}}?" again.
+- Your first message already asked the opener. After the caller responds, proceed directly to the next step.
+- Once the caller confirms identity, never restart the opener and never repeat the opening question again.
+- If the caller asks "who is this" or "what is this about", answer naturally and then proceed.
 - If the caller says "hello", "hello Sam", "can you hear me", or "are you there", treat it as an audio check. Say "Yep, I'm here" and continue from the current stage.
 
 Use this flow unless the caller asks a direct question:
-1. Confirm identity: "Am I speaking with {{first_name}}?"
-2. "Got it. You were looking into hair systems or options for hair loss. Does that ring a bell?"
-3. Ask one at a time:
+1. "Got it. You were looking into hair systems or options for hair loss. Does that ring a bell?"
+2. Ask one at a time:
    - "Is this your first time looking into hair systems?"
    - "How long have you been dealing with hair loss?"
    - "Have you looked into anything already, like transplants or medication?"
-4. Say: "Yeah, that makes sense. A lot of guys go down that route first. The difference with hair systems is that it's non-surgical, and you see results right away. A lot of guys try transplants or meds first, and it doesn't always go how they expected. We see that all the time."
-5. Ask: "Out of curiosity, do you notice yourself wearing hats more than you'd like, or using something like Toppik a bit?"
-6. If yes, say: "Yeah, that's super common. Most guys don't even realize they're doing it at first, and once they don't have to anymore, it's a completely different feeling. And honestly, once you actually see yourself with hair again, that's when it really clicks."
+3. Say: "Yeah, that makes sense. A lot of guys go down that route first. The difference with hair systems is that it's non-surgical, and you see results right away. A lot of guys try transplants or meds first, and it doesn't always go how they expected. We see that all the time."
+4. Ask: "Out of curiosity, do you notice yourself wearing hats more than you'd like, or using something like Toppik a bit?"
+5. If yes, say: "Yeah, that's super common. Most guys don't even realize they're doing it at first, and once they don't have to anymore, it's a completely different feeling. And honestly, once you actually see yourself with hair again, that's when it really clicks."
    If no, say: "Got it, not everyone does. Sometimes it's more just noticing it in certain lighting or angles over time. And once you see the difference, it's a completely different feeling."
-7. Say: "What we usually do is just a quick consult so you can actually see how it works and what it would look like for you."
-8. Ask: "Would mornings or afternoons be better for you?"
+6. Say: "What we usually do is just a quick consult so you can actually see how it works and what it would look like for you."
+7. Ask: "Would mornings or afternoons be better for you?"
 
 Booking rules:
 - After the caller gives a scheduling preference, do not restart discovery.
@@ -116,6 +114,14 @@ function isPracticeGoodbye(text: string): boolean {
     /\bi'?m all set\b/.test(normalized) ||
     /\bwe'?re all set\b/.test(normalized)
   );
+}
+
+function usableFirstName(name: string): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const first = trimmed.split(/\s+/)[0];
+  if (first.length >= 2) return first;
+  return null;
 }
 
 function buildChrisConversationConfig(script: string) {
@@ -235,14 +241,14 @@ async function ensureCalendarToolId(apiKey: string): Promise<string | null> {
   return cachedCalendarToolId;
 }
 
-function buildSamOutboundConversationConfig(calendarToolId?: string | null) {
+function buildSamOutboundConversationConfig(calendarToolId?: string | null, firstMessage?: string) {
   return {
     agent: {
       prompt: {
         prompt: SAM_OUTBOUND_PROMPT,
         ...(calendarToolId ? { tool_ids: [calendarToolId] } : {}),
       },
-      first_message: "Hey — this is Sam with Infinite Hair.",
+      first_message: firstMessage || "Hey — this is Sam with Infinite Hair.",
       language: "en",
     },
     turn: {
@@ -326,7 +332,7 @@ async function ensureAgentId(apiKey: string, name: string, conversationConfig?: 
   return agentId;
 }
 
-async function getOrFetchAgentId(apiKey: string, botKind: string, script: string, samRoute: "inbound" | "outbound"): Promise<string | null> {
+async function getOrFetchAgentId(apiKey: string, botKind: string, script: string, samRoute: "inbound" | "outbound", callerName: string = ""): Promise<string | null> {
   if (botKind === "chris") {
     const envAgentId = Deno.env.get("PRACTICE_CHRIS_AGENT_ID")?.trim();
     if (envAgentId) return envAgentId;
@@ -338,10 +344,15 @@ async function getOrFetchAgentId(apiKey: string, botKind: string, script: string
     if (!calendarToolId) {
       console.warn(`[telnyx-bridge] ${CALENDAR_TOOL_NAME} unavailable; building outbound agent without tool_ids so Sam can still speak`);
     }
+    const firstName = usableFirstName(callerName);
+    const firstMessage = firstName
+      ? `Hey — this is Sam with Infinite Hair. Is this ${firstName}?`
+      : "Hey — this is Sam with Infinite Hair. Did I catch you at an okay time?";
+    console.log(`[telnyx-bridge] outbound first_message: "${firstMessage}" (callerName="${callerName}")`);
     const outboundAgent = await ensureAgentId(
       apiKey,
       SAM_OUTBOUND_AGENT_NAME,
-      buildSamOutboundConversationConfig(calendarToolId),
+      buildSamOutboundConversationConfig(calendarToolId, firstMessage),
     );
     if (!outboundAgent) {
       throw new Error(`outbound_setup_failed: agent "${SAM_OUTBOUND_AGENT_NAME}" could not be created/fetched`);
@@ -428,7 +439,7 @@ Deno.serve(async (req) => {
 
   let agentId: string | null = null;
   try {
-    agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript, samRoute);
+    agentId = await getOrFetchAgentId(apiKey, botKind, practiceScript, samRoute, callerName);
   } catch (err: any) {
     const reason = `outbound_setup_failed: ${err?.message || String(err)}`;
     await failOutbound(reason, "agent_or_tool_setup_failed");
