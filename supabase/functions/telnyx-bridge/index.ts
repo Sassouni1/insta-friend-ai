@@ -17,7 +17,7 @@ const SAM_AGENT_NAME = "Sam - Hair Systems";
 const SAM_OUTBOUND_AGENT_NAME = "Sam - Hair Systems Outbound Booking Stable";
 const CHRIS_AGENT_NAME = "Chris - Practice Caller";
 const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
-const SAM_VOICE_ID = "iP95p4xoKVk53GoZ742B";
+const SAM_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0"; // Mark - Natural Conversations
 const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
 
 const SAM_OUTBOUND_PROMPT = `You are Sam, the outbound appointment setter for {{company_name}}.
