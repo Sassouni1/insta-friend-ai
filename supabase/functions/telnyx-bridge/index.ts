@@ -241,14 +241,14 @@ async function ensureCalendarToolId(apiKey: string): Promise<string | null> {
   return cachedCalendarToolId;
 }
 
-function buildSamOutboundConversationConfig(calendarToolId?: string | null) {
+function buildSamOutboundConversationConfig(calendarToolId?: string | null, firstMessage?: string) {
   return {
     agent: {
       prompt: {
         prompt: SAM_OUTBOUND_PROMPT,
         ...(calendarToolId ? { tool_ids: [calendarToolId] } : {}),
       },
-      first_message: "Hey — this is Sam with Infinite Hair.",
+      first_message: firstMessage || "Hey — this is Sam with Infinite Hair.",
       language: "en",
     },
     turn: {
