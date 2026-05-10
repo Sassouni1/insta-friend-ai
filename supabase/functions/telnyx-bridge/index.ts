@@ -20,8 +20,9 @@ const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
 const SAM_VOICE_ID = "1SM7GgM6IMuvQlz2BwM3"; // Mark - Casual, Relaxed and Light
 const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
 const TELNYX_PCMU_FRAME_BYTES = 160; // 20ms of 8k μ-law audio
-const TELNYX_AGENT_PACKET_BYTES = TELNYX_PCMU_FRAME_BYTES * 5; // 100ms chunks; Telnyx buffers these more smoothly than server-side 20ms pacing
-const TELEPHONY_AGENT_OUTPUT_FORMAT = "ulaw_8000";
+const TELNYX_AGENT_PACKET_BYTES = TELNYX_PCMU_FRAME_BYTES * 2; // 40ms packets keep RTP payloads small and steady on PSTN
+const TELEPHONY_AGENT_OUTPUT_FORMAT = "pcm_16000";
+const TELEPHONY_OUTPUT_GAIN = 0.78; // add headroom before μ-law encoding so PSTN playback does not clip/crackle
 
 const SAM_OUTBOUND_PROMPT = `You are Sam, the outbound appointment setter for {{company_name}}.
 
@@ -535,8 +536,8 @@ Deno.serve(async (req) => {
   const OUTBOUND_FIRST_SPEAK_DELAY_MS = 2500;
   const pendingTelnyxAudio: string[] = [];
 
-  // Outbound (EL -> Telnyx) audio queue: send 100ms PCMU packets and let Telnyx jitter-buffer playback.
-  // Serverless setInterval pacing at 20ms can drift under load and sounds exactly like a bad phone connection.
+  // Outbound (EL -> Telnyx) audio queue: convert to clean, low-headroom PCMU and send compact RTP payloads.
+  // The "breaking up" symptom is usually clipping/codec roughness, not speech timing.
   const agentAudioQueue: string[] = [];
   let agentAudioRemainder = new Uint8Array(0);
   let queuedAgentAudioPackets = 0;
@@ -608,7 +609,7 @@ Deno.serve(async (req) => {
         agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + framesInPacket * 20 + AGENT_SPEAK_TAIL_MS);
         if (!firstAgentAudioSent) {
           firstAgentAudioSent = true;
-          console.log(`[bridge ${conversationId}] FIRST agent audio packet sent to Telnyx (buffered PCMU 8k, rawBytes=${rawLen}, frames=${framesInPacket}, passthrough=${elOutputPassthrough})`);
+        console.log(`[bridge ${conversationId}] FIRST agent audio packet sent to Telnyx (clean PCMU 8k, rawBytes=${rawLen}, frames=${framesInPacket}, passthrough=${elOutputPassthrough})`);
         }
         if (sentAgentAudioFrames % 250 === 0) {
           const avg = payloadBytesCount > 0 ? Math.round(payloadBytesSum / payloadBytesCount) : 0;
@@ -637,8 +638,8 @@ Deno.serve(async (req) => {
     }
     stopAgentRemainderFlushTimer();
 
-    // Telnyx accepts 20ms to 30s RTP payload chunks. We packetize into 100ms chunks:
-    // fewer websocket sends, no serverless 20ms timer jitter, still low latency.
+    // Telnyx accepts 20ms to 30s RTP payload chunks. Keep packets compact:
+    // large bursts can sound like a weak/breaking phone connection on some carriers.
     // Do not pad every EL chunk:
     // ElevenLabs often sends arbitrary byte counts, and per-chunk silence padding creates
     // tiny repeated dropouts that sound like crackle/bad connection. Carry leftovers into
@@ -824,6 +825,16 @@ Deno.serve(async (req) => {
     return s;
   }
 
+  function conditionTelephonyPcm(pcm: Int16Array): Int16Array {
+    // ElevenLabs voices can hit μ-law/PSTN too hot. Scale before encoding so the phone leg
+    // has headroom; this targets the audible "crackle/breaking up" while preserving cadence.
+    const out = new Int16Array(pcm.length);
+    for (let i = 0; i < pcm.length; i++) {
+      out[i] = softLimitSample(Math.round(pcm[i] * TELEPHONY_OUTPUT_GAIN));
+    }
+    return out;
+  }
+
   function downsample16to8Filtered(pcm16: Int16Array): Int16Array {
     const taps = LPF_FIR_16K;
     const N = taps.length;
@@ -856,26 +867,26 @@ Deno.serve(async (req) => {
 
   function transformELAudioForTelnyx(audioB64: string): string {
     const sourceFormat = elAgentOutputAudioFormat || "pcm_16000";
-    if (isMulaw8000(sourceFormat)) return audioB64;
+    if (isMulaw8000(sourceFormat)) {
+      const pcm = mulawToPcm16(base64ToUint8(audioB64));
+      return uint8ToBase64(pcm16ToMulaw(conditionTelephonyPcm(pcm)));
+    }
 
     if (isPcm8000(sourceFormat)) {
       const pcm8raw = base64ToInt16(audioB64);
-      // Apply soft limiter only (no resample needed)
-      const pcm8 = new Int16Array(pcm8raw.length);
-      for (let i = 0; i < pcm8raw.length; i++) pcm8[i] = softLimitSample(pcm8raw[i]);
-      return uint8ToBase64(pcm16ToMulaw(pcm8));
+      return uint8ToBase64(pcm16ToMulaw(conditionTelephonyPcm(pcm8raw)));
     }
 
     if (isPcm16000(sourceFormat)) {
       const pcm16 = base64ToInt16(audioB64);
       const pcm8 = downsample16to8Filtered(pcm16);
-      return uint8ToBase64(pcm16ToMulaw(pcm8));
+      return uint8ToBase64(pcm16ToMulaw(conditionTelephonyPcm(pcm8)));
     }
 
     console.warn(`[bridge ${conversationId}] unknown EL output format ${sourceFormat}, defaulting EL→Telnyx to pcm_16000 -> PCMU (filtered)`);
     const pcm16 = base64ToInt16(audioB64);
     const pcm8 = downsample16to8Filtered(pcm16);
-    return uint8ToBase64(pcm16ToMulaw(pcm8));
+    return uint8ToBase64(pcm16ToMulaw(conditionTelephonyPcm(pcm8)));
   }
 
   function sendUserAudioToEL(mulawB64: string) {
@@ -947,7 +958,7 @@ Deno.serve(async (req) => {
 
     socket.onopen = () => {
       elConnecting = false;
-      console.log(`[bridge ${conversationId}] EL open — requesting native ulaw_8000 output for phone passthrough and pcm_16000 input`);
+      console.log(`[bridge ${conversationId}] EL open — requesting pcm_16000 output for conditioned phone encode and pcm_16000 input`);
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
       const conversationConfigOverride: Record<string, unknown> = {
         asr: { user_input_audio_format: "pcm_16000" },
@@ -1049,7 +1060,7 @@ Deno.serve(async (req) => {
             try {
               const raw = atob(b64);
               const hex = Array.from(raw.slice(0, 32)).map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join(" ");
-              console.log(`[bridge ${conversationId}] EL audio first 32 bytes hex: ${hex} (b64 len=${b64.length}, raw len=${raw.length})`);
+          console.log(`[bridge ${conversationId}] EL audio first 32 bytes hex: ${hex} (b64 len=${b64.length}, raw len=${raw.length}, gain=${TELEPHONY_OUTPUT_GAIN})`);
             } catch {}
           }
           enqueueAgentAudioFromEL(b64);
