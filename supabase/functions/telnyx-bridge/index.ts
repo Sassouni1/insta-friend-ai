@@ -116,6 +116,14 @@ function isPracticeGoodbye(text: string): boolean {
   );
 }
 
+function usableFirstName(name: string): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const first = trimmed.split(/\s+/)[0];
+  if (first.length >= 2) return first;
+  return null;
+}
+
 function buildChrisConversationConfig(script: string) {
   return {
     agent: {
