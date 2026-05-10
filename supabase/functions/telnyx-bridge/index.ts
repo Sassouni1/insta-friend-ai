@@ -535,19 +535,19 @@ Deno.serve(async (req) => {
   const OUTBOUND_FIRST_SPEAK_DELAY_MS = 2500;
   const pendingTelnyxAudio: string[] = [];
 
-  // Outbound (EL -> Telnyx) audio pacer: 160-byte PCMU frames every 20ms.
+  // Outbound (EL -> Telnyx) audio queue: send 100ms PCMU packets and let Telnyx jitter-buffer playback.
+  // Serverless setInterval pacing at 20ms can drift under load and sounds exactly like a bad phone connection.
   const agentAudioQueue: string[] = [];
   let agentAudioRemainder = new Uint8Array(0);
+  let queuedAgentAudioPackets = 0;
+  let sentAgentAudioPackets = 0;
   let queuedAgentAudioFrames = 0;
   let sentAgentAudioFrames = 0;
   let maxAgentQueueDepth = 0;
-  let droppedAgentAudioFrames = 0;
-  let agentPacerTimer: number | null = null;
+  let droppedAgentAudioPackets = 0;
   let agentRemainderFlushTimer: number | null = null;
   let elAgentSpeaking = false; // true while EL is actively producing audio (between audio events; reset on interruption/turn end via queue drain timeout)
   let lastELAudioAt = 0;
-  let starvationLogCount = 0;
-  let lastStarvationLogAt = 0;
   // Payload byte-size stats (raw decoded bytes per Telnyx media payload)
   let payloadBytesMin = Number.POSITIVE_INFINITY;
   let payloadBytesMax = 0;
@@ -556,13 +556,6 @@ Deno.serve(async (req) => {
   let nonStandardFrameCount = 0;
   // EL output format passthrough mode
   let elOutputPassthrough = false;
-
-  function stopAgentPacer() {
-    if (agentPacerTimer !== null) {
-      clearInterval(agentPacerTimer);
-      agentPacerTimer = null;
-    }
-  }
 
   function stopAgentRemainderFlushTimer() {
     if (agentRemainderFlushTimer !== null) {
@@ -573,51 +566,33 @@ Deno.serve(async (req) => {
 
   function clearAgentAudioQueue(reason: string) {
     if (agentAudioQueue.length > 0) {
-      droppedAgentAudioFrames += agentAudioQueue.length;
+      droppedAgentAudioPackets += agentAudioQueue.length;
       console.log(`[bridge ${conversationId}] clearing agent audio queue depth=${agentAudioQueue.length} reason=${reason}`);
       agentAudioQueue.length = 0;
     }
     stopAgentRemainderFlushTimer();
     agentAudioRemainder = new Uint8Array(0);
-    stopAgentPacer();
   }
 
-  function startAgentPacer() {
-    if (agentPacerTimer !== null) return;
-    agentPacerTimer = setInterval(() => {
-      if (bridgeClosed) { stopAgentPacer(); return; }
-      if (!telnyxStreamId || telnyxSocket.readyState !== WebSocket.OPEN) {
-        if (agentAudioQueue.length > 0) {
-          const dropped = agentAudioQueue.length;
-          droppedAgentAudioFrames += dropped;
-          agentAudioQueue.length = 0;
-          console.warn(`[bridge ${conversationId}] dropping ${dropped} agent audio frames — no stream_id or socket closed`);
-        }
-        stopAgentPacer();
-        return;
+  function flushAgentAudioQueue() {
+    if (bridgeClosed) return;
+    if (!telnyxStreamId || telnyxSocket.readyState !== WebSocket.OPEN) {
+      if (agentAudioQueue.length > 0) {
+        const dropped = agentAudioQueue.length;
+        droppedAgentAudioPackets += dropped;
+        agentAudioQueue.length = 0;
+        console.warn(`[bridge ${conversationId}] dropping ${dropped} agent audio packets — no stream_id or socket closed`);
       }
-      if (agentAudioQueue.length === 0) {
-        // Queue starvation. Detect EL still producing/speaking (audio within last 1s).
-        const elStillSpeaking = elAgentSpeaking && (Date.now() - lastELAudioAt) < 1000;
-        if (elStillSpeaking) {
-          starvationLogCount++;
-          const now = Date.now();
-          if (now - lastStarvationLogAt > 200) {
-            lastStarvationLogAt = now;
-            console.warn(`[bridge ${conversationId}] STARVATION: pacer fired with empty queue while EL still producing audio (count=${starvationLogCount}, msSinceLastELAudio=${now - lastELAudioAt})`);
-          }
-        } else {
-          // EL not producing — safe to stop pacer until next chunk arrives.
-          stopAgentPacer();
-        }
-        return;
-      }
-      const frame = agentAudioQueue.shift()!;
+      return;
+    }
+    while (agentAudioQueue.length > 0) {
+      const packet = agentAudioQueue.shift()!;
       try {
         // Track payload byte size (raw decoded bytes, not base64).
-        let rawLen = 160;
-        try { rawLen = base64ToUint8(frame).length; } catch {}
-        if (rawLen !== 160) nonStandardFrameCount++;
+        let rawLen = TELNYX_AGENT_PACKET_BYTES;
+        try { rawLen = base64ToUint8(packet).length; } catch {}
+        const framesInPacket = Math.max(1, Math.round(rawLen / TELNYX_PCMU_FRAME_BYTES));
+        if (rawLen % TELNYX_PCMU_FRAME_BYTES !== 0) nonStandardFrameCount++;
         if (rawLen < payloadBytesMin) payloadBytesMin = rawLen;
         if (rawLen > payloadBytesMax) payloadBytesMax = rawLen;
         payloadBytesSum += rawLen;
@@ -626,22 +601,23 @@ Deno.serve(async (req) => {
         telnyxSocket.send(JSON.stringify({
           event: "media",
           stream_id: telnyxStreamId,
-          media: { payload: frame },
+          media: { payload: packet },
         }));
-        sentAgentAudioFrames++;
-        agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + 20 + AGENT_SPEAK_TAIL_MS);
+        sentAgentAudioPackets++;
+        sentAgentAudioFrames += framesInPacket;
+        agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + framesInPacket * 20 + AGENT_SPEAK_TAIL_MS);
         if (!firstAgentAudioSent) {
           firstAgentAudioSent = true;
-          console.log(`[bridge ${conversationId}] FIRST agent audio frame sent to Telnyx (paced 20ms PCMU 8k, rawBytes=${rawLen}, passthrough=${elOutputPassthrough})`);
+          console.log(`[bridge ${conversationId}] FIRST agent audio packet sent to Telnyx (buffered PCMU 8k, rawBytes=${rawLen}, frames=${framesInPacket}, passthrough=${elOutputPassthrough})`);
         }
         if (sentAgentAudioFrames % 250 === 0) {
           const avg = payloadBytesCount > 0 ? Math.round(payloadBytesSum / payloadBytesCount) : 0;
-          console.log(`[bridge ${conversationId}] payload bytes stats sent=${sentAgentAudioFrames} min=${payloadBytesMin === Number.POSITIVE_INFINITY ? "-" : payloadBytesMin} max=${payloadBytesMax} avg=${avg} nonStandard=${nonStandardFrameCount} starvations=${starvationLogCount}`);
+          console.log(`[bridge ${conversationId}] payload bytes stats sentFrames=${sentAgentAudioFrames} sentPackets=${sentAgentAudioPackets} min=${payloadBytesMin === Number.POSITIVE_INFINITY ? "-" : payloadBytesMin} max=${payloadBytesMax} avg=${avg} nonStandard=${nonStandardFrameCount}`);
         }
       } catch (err) {
-        console.error(`[bridge ${conversationId}] pacer send error`, err);
+        console.error(`[bridge ${conversationId}] agent audio send error`, err);
       }
-    }, 20) as unknown as number;
+    }
   }
 
   function enqueueAgentAudioFromEL(audioB64FromEL: string) {
