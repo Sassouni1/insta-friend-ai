@@ -853,22 +853,9 @@ Deno.serve(async (req) => {
               console.log(`[bridge ${conversationId}] EL audio first 32 bytes hex: ${hex} (b64 len=${b64.length}, raw len=${raw.length})`);
             } catch {}
           }
-
-          const telnyxPayload = transformELAudioForTelnyx(b64);
-          telnyxSocket.send(JSON.stringify({
-            event: "media",
-            stream_id: telnyxStreamId,
-            media: { payload: telnyxPayload },
-          }));
-          try {
-            const playoutMs = Math.ceil((atob(telnyxPayload).length / 8000) * 1000);
-            agentSpeakingUntil = Math.max(agentSpeakingUntil, Date.now() + playoutMs + AGENT_SPEAK_TAIL_MS);
-          } catch {}
-          if (!firstAgentAudioSent) {
-            firstAgentAudioSent = true;
-            console.log(
-              `[bridge ${conversationId}] FIRST agent audio sent to Telnyx (${elAgentOutputAudioFormat || "pcm_16000"} -> Telnyx PCMU 8k)`,
-            );
+          enqueueAgentAudioFromEL(b64);
+          if (queuedAgentAudioFrames % 200 === 0) {
+            console.log(`[bridge ${conversationId}] agent audio counters queued=${queuedAgentAudioFrames} sent=${sentAgentAudioFrames} maxDepth=${maxAgentQueueDepth} dropped=${droppedAgentAudioFrames}`);
           }
           break;
         }
