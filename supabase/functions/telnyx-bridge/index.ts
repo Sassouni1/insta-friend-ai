@@ -19,6 +19,9 @@ const CHRIS_AGENT_NAME = "Chris - Practice Caller";
 const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
 const SAM_VOICE_ID = "1SM7GgM6IMuvQlz2BwM3"; // Mark - Casual, Relaxed and Light
 const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
+const TELNYX_PCMU_FRAME_BYTES = 160; // 20ms of 8k μ-law audio
+const TELNYX_AGENT_PACKET_BYTES = TELNYX_PCMU_FRAME_BYTES * 5; // 100ms chunks; Telnyx buffers these more smoothly than server-side 20ms pacing
+const TELEPHONY_AGENT_OUTPUT_FORMAT = "ulaw_8000";
 
 const SAM_OUTBOUND_PROMPT = `You are Sam, the outbound appointment setter for {{company_name}}.
 
@@ -143,6 +146,7 @@ function buildChrisConversationConfig(script: string) {
     tts: {
       model_id: "eleven_turbo_v2_5",
       voice_id: Deno.env.get("PRACTICE_CHRIS_VOICE_ID")?.trim() || DEFAULT_CHRIS_VOICE_ID,
+      agent_output_audio_format: TELEPHONY_AGENT_OUTPUT_FORMAT,
       stability: 0.50,
       similarity_boost: 0.75,
       style: 0.40,
@@ -278,6 +282,7 @@ function buildSamOutboundConversationConfig(calendarToolId?: string | null, firs
     tts: {
       model_id: "eleven_turbo_v2_5",
       voice_id: SAM_VOICE_ID,
+      agent_output_audio_format: TELEPHONY_AGENT_OUTPUT_FORMAT,
       stability: 0.50,
       similarity_boost: 0.75,
       style: 0.40,
