@@ -958,7 +958,7 @@ Deno.serve(async (req) => {
 
     socket.onopen = () => {
       elConnecting = false;
-      console.log(`[bridge ${conversationId}] EL open — requesting native ulaw_8000 output for phone passthrough and pcm_16000 input`);
+      console.log(`[bridge ${conversationId}] EL open — requesting pcm_16000 output for conditioned phone encode and pcm_16000 input`);
       const firstName = callerName.trim().split(/\s+/)[0] || "there";
       const conversationConfigOverride: Record<string, unknown> = {
         asr: { user_input_audio_format: "pcm_16000" },
@@ -1060,7 +1060,7 @@ Deno.serve(async (req) => {
             try {
               const raw = atob(b64);
               const hex = Array.from(raw.slice(0, 32)).map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join(" ");
-              console.log(`[bridge ${conversationId}] EL audio first 32 bytes hex: ${hex} (b64 len=${b64.length}, raw len=${raw.length})`);
+          console.log(`[bridge ${conversationId}] EL audio first 32 bytes hex: ${hex} (b64 len=${b64.length}, raw len=${raw.length}, gain=${TELEPHONY_OUTPUT_GAIN})`);
             } catch {}
           }
           enqueueAgentAudioFromEL(b64);
