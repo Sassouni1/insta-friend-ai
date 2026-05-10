@@ -1102,6 +1102,7 @@ Deno.serve(async (req) => {
           const callerIsBargingIn = typeof inboundEnergy === "number" && inboundEnergy >= INBOUND_SPEECH_THRESHOLD;
           if (callerIsBargingIn) {
             agentSpeakingUntil = Date.now() + INTERRUPTION_CLEAR_TAIL_MS;
+            clearAgentAudioQueue("caller barge-in");
             if (telnyxStreamId && telnyxSocket.readyState === WebSocket.OPEN) {
               telnyxSocket.send(JSON.stringify({ event: "clear", stream_id: telnyxStreamId }));
             }
