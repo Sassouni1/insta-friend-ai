@@ -20,8 +20,9 @@ const DEFAULT_CHRIS_VOICE_ID = "iP95p4xoKVk53GoZ742B";
 const SAM_VOICE_ID = "1SM7GgM6IMuvQlz2BwM3"; // Mark - Casual, Relaxed and Light
 const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
 const TELNYX_PCMU_FRAME_BYTES = 160; // 20ms of 8k μ-law audio
-const TELNYX_AGENT_PACKET_BYTES = TELNYX_PCMU_FRAME_BYTES * 5; // 100ms chunks; Telnyx buffers these more smoothly than server-side 20ms pacing
-const TELEPHONY_AGENT_OUTPUT_FORMAT = "ulaw_8000";
+const TELNYX_AGENT_PACKET_BYTES = TELNYX_PCMU_FRAME_BYTES * 2; // 40ms packets keep RTP payloads small and steady on PSTN
+const TELEPHONY_AGENT_OUTPUT_FORMAT = "pcm_16000";
+const TELEPHONY_OUTPUT_GAIN = 0.78; // add headroom before μ-law encoding so PSTN playback does not clip/crackle
 
 const SAM_OUTBOUND_PROMPT = `You are Sam, the outbound appointment setter for {{company_name}}.
 
