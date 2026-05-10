@@ -532,11 +532,13 @@ Deno.serve(async (req) => {
 
   // Outbound (EL -> Telnyx) audio pacer: 160-byte PCMU frames every 20ms.
   const agentAudioQueue: string[] = [];
+  let agentAudioRemainder = new Uint8Array(0);
   let queuedAgentAudioFrames = 0;
   let sentAgentAudioFrames = 0;
   let maxAgentQueueDepth = 0;
   let droppedAgentAudioFrames = 0;
   let agentPacerTimer: number | null = null;
+  let agentRemainderFlushTimer: number | null = null;
   let elAgentSpeaking = false; // true while EL is actively producing audio (between audio events; reset on interruption/turn end via queue drain timeout)
   let lastELAudioAt = 0;
   let starvationLogCount = 0;
@@ -557,12 +559,21 @@ Deno.serve(async (req) => {
     }
   }
 
+  function stopAgentRemainderFlushTimer() {
+    if (agentRemainderFlushTimer !== null) {
+      clearTimeout(agentRemainderFlushTimer);
+      agentRemainderFlushTimer = null;
+    }
+  }
+
   function clearAgentAudioQueue(reason: string) {
     if (agentAudioQueue.length > 0) {
       droppedAgentAudioFrames += agentAudioQueue.length;
       console.log(`[bridge ${conversationId}] clearing agent audio queue depth=${agentAudioQueue.length} reason=${reason}`);
       agentAudioQueue.length = 0;
     }
+    stopAgentRemainderFlushTimer();
+    agentAudioRemainder = new Uint8Array(0);
     stopAgentPacer();
   }
 
