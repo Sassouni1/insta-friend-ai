@@ -205,7 +205,7 @@ const SAM_CONVERSATION_CONFIG = {
     keywords: ["yes", "no", "yeah", "hair", "hair system", "transplant", "medication", "Pacific", "Central", "Eastern"],
   },
   tts: {
-    model_id: "eleven_turbo_v2_5",
+    model_id: "eleven_flash_v2",
     voice_id: FALLBACK_VOICE_ID,
     stability: 0.50,
     similarity_boost: 0.75,
