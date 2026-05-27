@@ -256,7 +256,7 @@ function buildSamOutboundConversationConfig(calendarToolId?: string | null, firs
         prompt: SAM_OUTBOUND_PROMPT,
         ...(calendarToolId ? { tool_ids: [calendarToolId] } : {}),
       },
-      first_message: firstMessage || "Hey — this is Sam with Infinite Hair.",
+      first_message: firstMessage || "Hey — who am I speaking with?",
       language: "en",
     },
     turn: {
