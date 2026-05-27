@@ -357,8 +357,8 @@ async function getOrFetchAgentId(apiKey: string, botKind: string, script: string
     }
     const firstName = usableFirstName(callerName);
     const firstMessage = firstName
-      ? `Hey — this is Sam with Infinite Hair. Is this ${firstName}?`
-      : "Hey — this is Sam with Infinite Hair. Did I catch you at an okay time?";
+      ? `Hey, is this ${firstName}?`
+      : `Hey — who am I speaking with?`;
     console.log(`[telnyx-bridge] outbound first_message: "${firstMessage}" (callerName="${callerName}")`);
     const outboundAgent = await ensureAgentId(
       apiKey,
