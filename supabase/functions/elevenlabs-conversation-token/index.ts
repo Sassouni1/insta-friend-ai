@@ -575,10 +575,15 @@ serve(async (req) => {
       requestBody = {};
     }
 
+    // Force patch by default so voice/config changes are always applied to the persisted agent.
+    // The agent persists its TTS voice server-side; without patching, web browser sessions
+    // keep using whatever voice was last written.
     const patchAgentConfig =
-      requestBody?.patch_agent_config === true ||
-      requestUrl.searchParams.get("patch_agent_config") === "true" ||
-      requestUrl.searchParams.get("patch_agent_config") === "1";
+      requestBody?.patch_agent_config === false ||
+      requestUrl.searchParams.get("patch_agent_config") === "false" ||
+      requestUrl.searchParams.get("patch_agent_config") === "0"
+        ? false
+        : true;
     const inspectAgentConfig =
       requestBody?.inspect_agent_config === true ||
       requestUrl.searchParams.get("inspect_agent_config") === "true" ||
