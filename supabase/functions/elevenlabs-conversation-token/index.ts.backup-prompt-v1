@@ -1,0 +1,654 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+};
+
+const AGENT_NAME = "Sam - Hair Systems";
+const PREFERRED_VOICE_ID = "oqnGPLczFm7QLPdseXmp";
+const FALLBACK_VOICE_ID = "oqnGPLczFm7QLPdseXmp"; // Chris (known-good default)
+const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
+
+const SAM_SCRIPT = `You are Sam, the voice appointment setter for {{company_name}}.
+
+Your persona, memory, conversational logic, and booking behavior are defined in this backend code. Treat this prompt as the source of truth for how you work.
+
+=== IDENTITY ===
+You are relaxed, grounded, and natural — like a laid-back friend. Never sound like a hype man, a scripted closer, or an infomercial host.
+
+=== STYLE RULES ===
+- Be concise, calm, warm, and confident.
+- Ask one question at a time.
+- Use natural spoken language.
+- Do not force filler words or fake hesitations.
+- Do not use generic praise like "Nice", "Great", "Perfect", or "Awesome" unless the user genuinely said something positive.
+- If the user is unclear, ask them to repeat instead of guessing.
+- If they ask if you're AI, answer honestly and casually, then continue.
+- Never read out URLs, meeting links, or long ID strings. Tell them they'll get the link in a confirmation message instead.
+- Never say the word "dollar" or use "$" in spoken responses.
+- Never call the user "Guest", "Guest Caller", or anything with the word "Guest". If you do not have a real first name, ask them what name they'd like to be called by, then use it.
+- Never repeat your opener or first name question verbatim. If you already asked who you are speaking with and the caller says "hello", "hello?", "can you hear me?", "yes?", or another short pleasantry, answer the meta part briefly, then ask for their name in different words. Example: "Yep, I can hear you. What's your name?"
+- If you still do not catch their name after asking, say "Sorry, I didn't catch your name — what should I call you?" Do not restart with "Hey — thanks for reaching out."
+
+=== MEMORY / KNOWN CONTEXT ===
+You already know this lead opted in and is on file.
+- first_name: {{first_name}}
+- caller_name: {{caller_name}}
+- caller_phone: {{caller_phone}}
+- caller_email: {{caller_email}}
+- company_name: {{company_name}}
+- tenant_timezone: {{tenant_timezone}}
+- tenant_id: {{tenant_id}}
+- conversation_id: {{conversation_id}}
+
+If first_name is empty, missing, or looks like "Guest" / "unknown" / a placeholder, treat the caller as unknown. In that case skip Stage 1 and Stage 2 and instead start with: "Hey — thanks for reaching out. Who am I speaking with?" Then once they give a name, use it naturally for the rest of the call and continue from Stage 2 onward (subbing their name in).
+
+Use known context naturally. Do not ask again for information you already have unless you need to verify or correct it.
+
+=== RESPONSE LOGIC ===
+Before every response, interpret what they meant:
+- POSITIVE
+- NEGATIVE
+- UNCERTAIN
+- QUESTION
+- OFF_TOPIC
+- UNCLEAR
+- EMOTIONAL
+- PLEASANTRY
+- META
+
+Respond to their actual meaning before advancing.
+Never move forward just because you heard a sound that might be agreement.
+If the caller says "hello", "hello Sam", "can you hear me", or asks if you are there after your opener or context reminder, treat it as an audio/check-in issue, not as a restart or a new lead. Briefly acknowledge and continue from the current stage. Do not say "Yes, that's me" unless they specifically ask who you are. If they missed the context reminder, restate it once: "Sorry, I may have cut out — this is Sam with {{company_name}}. You were looking into hair systems or options for hair loss. Does that ring a bell?"
+Never repeat Stage 1 once the caller has already confirmed they are {{first_name}} or given any positive identity confirmation.
+
+=== OPERATIONAL RULES ===
+- If silence lasts about 15 seconds, gently check if they're still there by asking "Hey, are you still there?"
+- If silence continues about 20 more seconds after that, end the call naturally.
+- If voicemail or a beep is detected, end the call.
+- After booking, thank them and end.
+- Never send a silence nudge less than 15 seconds after your own last question.
+
+=== PRIMARY GOAL ===
+Your goal is to book a consultation for a prospect interested in hair systems or hair loss solutions.
+
+=== CONVERSATION FLOW ===
+STAGE 1 — Opener
+Goal: confirm you reached the right person.
+Say: "Hey — is this {{first_name}}?"
+Wait.
+
+STAGE 2 — Context reminder
+Goal: remind them why you're calling.
+Say: "Got it. This is Sam with {{company_name}} — you were looking into hair systems or options for hair loss. Does that ring a bell?"
+Wait.
+
+STAGE 3 — Discovery
+Goal: understand their situation.
+Ask one at a time:
+1. "Is this your first time looking into hair systems?"
+2. "How long have you been dealing with hair loss?"
+3. "Have you looked into anything already — like transplants or medication?"
+Wait after each.
+
+STAGE 4 — Reframe + position
+Goal: position hair systems clearly.
+Say naturally:
+"Yeah, that makes sense — a lot of guys go down that route first.
+The difference with hair systems is it's non-surgical, and you see results right away.
+A lot of guys try transplants or meds first, and it doesn't always go how they expected. We see that all the time."
+
+STAGE 5 — Self-awareness trigger
+Goal: deepen emotional relevance.
+Ask: "Out of curiosity — do you notice yourself wearing hats more than you'd like, or using something like Toppik a bit?"
+Wait.
+
+STAGE 6 — Build desire
+If YES:
+"Yeah — that's super common.
+Most guys don't even realize they're doing it at first, and once they don't have to anymore, it's a completely different feeling.
+And honestly, once you actually see yourself with hair again, that's when it really clicks."
+If NO:
+"Got it — yeah, not everyone does.
+Sometimes it's more just noticing it in certain lighting or angles over time.
+And once you see the difference, it's a completely different feeling."
+
+STAGE 7 — Transition
+Goal: bridge to consult.
+Say: "What we usually do is just a quick consult so you can actually see how it works and what it would look like for you."
+
+STAGE 8 — Availability preference
+Goal: narrow scheduling preference.
+Ask: "Would mornings or afternoons be better for you?"
+Wait.
+
+STAGE 9 — Timezone
+Goal: confirm timezone.
+Ask: "Got it — are you in Pacific, Central, or Eastern?"
+Wait.
+Use their answer if provided; otherwise use {{tenant_timezone}} as fallback context.
+
+STAGE 10 — Real booking
+Goal: offer real appointment options from the calendar.
+For phone calls, live calendar slots may already be provided in {{live_calendar_slots}} by the Telnyx bridge.
+If {{live_calendar_slots}} contains options, use only those options.
+If no live slots are provided, call the availability tool using tenant_id={{tenant_id}}, the caller's time preference, and the timezone you are using.
+Never invent availability or make up dates.
+Offer two concrete slots naturally, like:
+"I've got [Day] at [Time] or [Day] at [Time] — which works better?"
+Remember the exact option numbers and slot_iso values returned by the tool.
+If the caller says "first one", "second one", a day name, a time, "the morning one", or similar, map that to the matching returned option.
+If the caller says "anything later", "next week", "not that day", "afternoon instead", or similar, call the availability tool again with that updated preference.
+If no slots match, ask for a different time window and call availability again.
+
+STAGE 11 — Confirm and book
+Goal: confirm details and book live.
+You already know their name, phone, and email from the opt-in context.
+If caller_email is missing or empty, ask exactly: "Real quick, what's the best email to put on file?"
+Do not book until you have a usable email.
+Then call the booking tool with:
+- tenant_id={{tenant_id}}
+- conversation_id={{conversation_id}}
+- caller_name={{caller_name}}
+- caller_phone={{caller_phone}}
+- caller_email={{caller_email}}
+- chosen slot_iso
+For phone calls, if the bridge provides a booking success update, use that as the source of truth before saying they are booked.
+After success say:
+"Perfect — I've got you down for [Day, Time]. You'll get a confirmation with all the details."
+
+=== OBJECTION HANDLING ===
+Always acknowledge first, then redirect back toward booking.
+
+If they say "I need to think about it":
+"Yeah, that's fair — honestly most people just need to see how it actually works before they can really decide. That's exactly what the consult is for. Once you see it, it becomes a lot clearer. Would earlier in the day or later work better for you?"
+
+If they say "Is this legit?":
+"Yeah, I get why you'd ask that. That's why we do the consult first — you'll see exactly how it works, how it looks, everything. I've got a couple spots — would morning or afternoon be easier?"
+
+If they say "I'm not sure it would work for me":
+"Yeah, totally — that's exactly why we take a look first. We'll go over your situation and tell you straight up what would work and what wouldn't. Would you be more free earlier or later in the day?"
+
+If they say "I don't want something fake looking":
+"Yeah, one hundred percent — that's the biggest concern. That's why seeing it first helps. Once you see how natural they look now, it clicks right away. Would morning or afternoon be easier?"
+
+After any objection, return to booking.`;
+
+const SAM_CONVERSATION_CONFIG = {
+  agent: {
+    prompt: {
+      prompt: SAM_SCRIPT,
+    },
+    first_message: "Hey — thanks for reaching out. Who am I speaking with?",
+    language: "en",
+  },
+  turn: {
+    mode: "turn",
+    turn_timeout: 4,
+    turn_eagerness: "eager",
+  },
+  conversation: {
+    client_events: [
+      "audio",
+      "interruption",
+      "agent_response",
+      "user_transcript",
+      "agent_response_correction",
+      "client_tool_call",
+      "agent_tool_response",
+    ],
+  },
+  asr: {
+    quality: "high",
+    keywords: ["yes", "no", "yeah", "hair", "hair system", "transplant", "medication", "Pacific", "Central", "Eastern"],
+  },
+  tts: {
+    model_id: "eleven_flash_v2",
+    voice_id: FALLBACK_VOICE_ID,
+    stability: 0.72,
+    similarity_boost: 0.80,
+    style: 0.0,
+    use_speaker_boost: true,
+    speed: 0.95,
+  },
+};
+
+// Diagnostic helper: wraps ElevenLabs API calls with structured error info
+interface OpResult {
+  ok: boolean;
+  status: number;
+  data?: any;
+  error_text?: string;
+  stage: string;
+  permission_hint?: string;
+}
+
+async function summarizeAgentConfig(apiKey: string, agentId: string) {
+  const op = await elevenLabsOp(
+    "inspect_agent",
+    `https://api.elevenlabs.io/v1/convai/agents/${agentId}`,
+    {
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": "application/json",
+      },
+    },
+    "convai_read",
+  );
+
+  if (!op.ok) {
+    return { ok: false, status: op.status, error_text: op.error_text, permission_hint: op.permission_hint };
+  }
+
+  const cfg = op.data?.conversation_config || {};
+  const agent = cfg.agent || {};
+  const promptText = agent.prompt?.prompt || "";
+
+  return {
+    ok: true,
+    agent_id: op.data?.agent_id || agentId,
+    name: op.data?.name,
+    first_message: agent.first_message,
+    language: agent.language,
+    prompt_length: typeof promptText === "string" ? promptText.length : null,
+    prompt_starts_with: typeof promptText === "string" ? promptText.slice(0, 80) : null,
+    turn: cfg.turn || null,
+    tts: cfg.tts || null,
+    asr: cfg.asr || null,
+    conversation: cfg.conversation || null,
+    vad: cfg.vad || null,
+    platform_override_flags: op.data?.platform_settings?.overrides || null,
+  };
+}
+
+async function elevenLabsOp(
+  stage: string,
+  url: string,
+  options: RequestInit,
+  permissionScope: string
+): Promise<OpResult> {
+  try {
+    const res = await fetch(url, options);
+    const text = await res.text();
+    let data: any;
+    try { data = JSON.parse(text); } catch { data = text; }
+
+    if (!res.ok) {
+      const hint = (res.status === 401 || res.status === 403)
+        ? `Missing permission: ${permissionScope}`
+        : res.status === 404
+          ? `Not found (${permissionScope})`
+          : undefined;
+      console.error(`[${stage}] FAILED ${res.status}: ${text.slice(0, 200)}`);
+      return { ok: false, status: res.status, error_text: text.slice(0, 300), stage, permission_hint: hint };
+    }
+    console.log(`[${stage}] OK ${res.status}`);
+    return { ok: true, status: res.status, data, stage };
+  } catch (err: any) {
+    console.error(`[${stage}] EXCEPTION: ${err.message}`);
+    return { ok: false, status: 0, error_text: err.message, stage, permission_hint: "network_error" };
+  }
+}
+
+function buildCalendarToolConfig() {
+  return {
+    type: "client",
+    name: CALENDAR_TOOL_NAME,
+    description:
+      "Check real GoHighLevel calendar availability and book a consultation appointment. Use action=availability before offering times. Use action=book only after the caller chooses an exact slot_iso.",
+    expects_response: true,
+    response_timeout_secs: 20,
+    disable_interruptions: true,
+    force_pre_tool_speech: true,
+    parameters: {
+      type: "object",
+      required: ["action"],
+      properties: {
+        action: {
+          type: "string",
+          enum: ["availability", "book"],
+          description: "Use availability to fetch real open slots; use book to create the appointment.",
+        },
+        days_ahead: {
+          type: "integer",
+          description: "For availability only. Number of days ahead to search. Default is 7.",
+        },
+        preference: {
+          type: "string",
+          description: "For availability only. Caller scheduling preference, such as morning, afternoon, later, next week, Tuesday, or after 2.",
+        },
+        timezone: {
+          type: "string",
+          description: "For availability only. Timezone to use for speaking and filtering slots, such as America/New_York.",
+        },
+        slot_iso: {
+          type: "string",
+          description: "For booking only. Exact ISO datetime chosen from a prior availability response.",
+        },
+        caller_name: {
+          type: "string",
+          description: "Caller name. Use the known caller_name dynamic variable when available.",
+        },
+        caller_phone: {
+          type: "string",
+          description: "Caller phone number. Use the known caller_phone dynamic variable.",
+        },
+        caller_email: {
+          type: "string",
+          description: "For booking. Caller email. If missing, ask the caller: Real quick, what's the best email to put on file?",
+        },
+      },
+    },
+  };
+}
+
+async function ensureCalendarToolId(apiKey: string, diagnostics: OpResult[]): Promise<string | null> {
+  const headers: Record<string, string> = {
+    "xi-api-key": apiKey,
+    "Content-Type": "application/json",
+  };
+
+  const listOp = await elevenLabsOp(
+    "list_tools",
+    "https://api.elevenlabs.io/v1/convai/tools",
+    { headers },
+    "convai_tools_read",
+  );
+  diagnostics.push(listOp);
+
+  if (listOp.ok) {
+    const existing = (listOp.data?.tools || []).find((tool: any) => tool?.tool_config?.name === CALENDAR_TOOL_NAME);
+    if (existing?.id) return existing.id;
+  } else {
+    console.warn(`Tool list failed; will try create directly: ${listOp.error_text}`);
+  }
+
+  const createOp = await elevenLabsOp(
+    "create_calendar_tool",
+    "https://api.elevenlabs.io/v1/convai/tools",
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ tool_config: buildCalendarToolConfig() }),
+    },
+    "convai_tools_write",
+  );
+  diagnostics.push(createOp);
+  if (!createOp.ok) {
+    console.warn(`Calendar tool create failed: ${createOp.error_text}`);
+    return null;
+  }
+  return createOp.data?.id || null;
+}
+
+type ElevenLabsKeySource = "connector" | "custom";
+
+function resolveApiKey(preferredSource?: string | null): { key: string; source: ElevenLabsKeySource } {
+  const custom = Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim();
+  const connector = Deno.env.get("ELEVENLABS_API_KEY")?.trim();
+
+  if (preferredSource === "custom" && custom) return { key: custom, source: "custom" };
+  if (preferredSource === "connector" && connector) return { key: connector, source: "connector" };
+
+  if (connector) return { key: connector, source: "connector" };
+  if (custom) return { key: custom, source: "custom" };
+  throw new Error("No ElevenLabs API key configured");
+}
+
+async function runPipeline(
+  apiKey: string,
+  keySource: string,
+  options: { patchAgentConfig?: boolean } = {},
+) {
+  const headers: Record<string, string> = {
+    "xi-api-key": apiKey,
+    "Content-Type": "application/json",
+  };
+
+  const diagnostics: OpResult[] = [];
+
+  // Step 1: Check preferred voice access, fallback to default if not found
+  let resolvedVoiceId = PREFERRED_VOICE_ID;
+  const voiceCheck = await elevenLabsOp(
+    "voice_access_check",
+    `https://api.elevenlabs.io/v1/voices/${PREFERRED_VOICE_ID}`,
+    { headers },
+    "voice_access"
+  );
+  diagnostics.push(voiceCheck);
+  if (!voiceCheck.ok) {
+    console.warn(`Preferred voice ${PREFERRED_VOICE_ID} not accessible (${voiceCheck.status}). Falling back to ${FALLBACK_VOICE_ID}`);
+    resolvedVoiceId = FALLBACK_VOICE_ID;
+    // Verify fallback voice
+    const fallbackCheck = await elevenLabsOp(
+      "fallback_voice_check",
+      `https://api.elevenlabs.io/v1/voices/${FALLBACK_VOICE_ID}`,
+      { headers },
+      "voice_access"
+    );
+    diagnostics.push(fallbackCheck);
+    if (!fallbackCheck.ok) {
+      return { success: false, diagnostics, key_source: keySource, error: `Neither preferred nor fallback voice accessible` };
+    }
+  }
+  console.log(`Using voice: ${resolvedVoiceId}`);
+
+  const calendarToolId = await ensureCalendarToolId(apiKey, diagnostics);
+  if (!calendarToolId) {
+    console.warn("Calendar tool unavailable; agent can speak but may not be able to book");
+  }
+
+  // Apply resolved voice to config
+  const configToUse = {
+    ...SAM_CONVERSATION_CONFIG,
+    agent: {
+      ...SAM_CONVERSATION_CONFIG.agent,
+      prompt: {
+        ...SAM_CONVERSATION_CONFIG.agent.prompt,
+        ...(calendarToolId ? { tool_ids: [calendarToolId] } : {}),
+      },
+    },
+    tts: { ...SAM_CONVERSATION_CONFIG.tts, voice_id: resolvedVoiceId },
+  };
+
+  // Step 2: Find existing agent (reuse, never delete)
+  let agentId: string | null = Deno.env.get("ELEVENLABS_AGENT_ID")?.trim() || null;
+
+  if (!agentId) {
+    const listOp = await elevenLabsOp(
+      "list_agents",
+      "https://api.elevenlabs.io/v1/convai/agents",
+      { headers },
+      "convai_read"
+    );
+    diagnostics.push(listOp);
+
+    if (listOp.ok) {
+      const agents = listOp.data?.agents || [];
+      const existing = agents.find((a: any) => a.name === AGENT_NAME);
+      if (existing) {
+        agentId = existing.agent_id;
+        console.log(`Reusing existing agent: ${agentId}`);
+      }
+    } else if (listOp.status !== 401) {
+      // Non-permission failure on list — bail
+      return { success: false, diagnostics, key_source: keySource, error: `List agents failed: ${listOp.error_text}` };
+    }
+    // If 401 on list, we'll try to create directly
+  }
+
+  // Step 3: Create if not found. Creation is a write, so keep it behind the same explicit patch gate.
+  if (!agentId) {
+    if (!options.patchAgentConfig) {
+      return { success: false, diagnostics, key_source: keySource, error: `Agent "${AGENT_NAME}" not found and patch_agent_config was not enabled` };
+    }
+
+    const createOp = await elevenLabsOp(
+      "create_agent",
+      "https://api.elevenlabs.io/v1/convai/agents/create",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          name: AGENT_NAME,
+          conversation_config: configToUse,
+        }),
+      },
+      "convai_write"
+    );
+    diagnostics.push(createOp);
+    if (!createOp.ok) {
+      return { success: false, diagnostics, key_source: keySource, error: `Create agent failed: ${createOp.error_text}` };
+    }
+    agentId = createOp.data.agent_id;
+    console.log(`Created agent: ${agentId}`);
+  }
+
+  // Step 4: Patch agent config only when explicitly requested.
+  if (options.patchAgentConfig) {
+    const patchOp = await elevenLabsOp(
+      "patch_agent",
+      `https://api.elevenlabs.io/v1/convai/agents/${agentId}`,
+      {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({
+          name: AGENT_NAME,
+          conversation_config: configToUse,
+        }),
+      },
+      "convai_write"
+    );
+    diagnostics.push(patchOp);
+    if (!patchOp.ok) {
+      console.warn(`Patch failed (non-fatal): ${patchOp.error_text}`);
+    }
+  } else {
+    console.log("Skipping agent config patch; patch_agent_config not enabled");
+  }
+
+  // Step 5: Get conversation token (WebRTC)
+  const tokenOp = await elevenLabsOp(
+    "get_conversation_token",
+    `https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=${agentId}`,
+    { headers },
+    "convai_conversation"
+  );
+  diagnostics.push(tokenOp);
+  if (!tokenOp.ok) {
+    return { success: false, diagnostics, key_source: keySource, error: `Conversation token failed: ${tokenOp.error_text}` };
+  }
+
+  // Step 6: Get signed URL (WebSocket) for more compatible browser fallback / default web transport
+  const signedUrlOp = await elevenLabsOp(
+    "get_signed_url",
+    `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${agentId}`,
+    { headers },
+    "convai_conversation"
+  );
+  diagnostics.push(signedUrlOp);
+
+  return {
+    success: true,
+    token: tokenOp.data.token,
+    signed_url: signedUrlOp.ok ? signedUrlOp.data.signed_url : null,
+    agent_id: agentId,
+    key_source: keySource,
+    diagnostics,
+  };
+}
+
+serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  try {
+    const requestUrl = new URL(req.url);
+    let requestBody: any = {};
+    try {
+      const rawBody = await req.text();
+      requestBody = rawBody ? JSON.parse(rawBody) : {};
+    } catch {
+      requestBody = {};
+    }
+
+    // Force patch by default so voice/config changes are always applied to the persisted agent.
+    // The agent persists its TTS voice server-side; without patching, web browser sessions
+    // keep using whatever voice was last written.
+    const patchAgentConfig =
+      requestBody?.patch_agent_config === false ||
+      requestUrl.searchParams.get("patch_agent_config") === "false" ||
+      requestUrl.searchParams.get("patch_agent_config") === "0"
+        ? false
+        : true;
+    const inspectAgentConfig =
+      requestBody?.inspect_agent_config === true ||
+      requestUrl.searchParams.get("inspect_agent_config") === "true" ||
+      requestUrl.searchParams.get("inspect_agent_config") === "1";
+    const preferredKeySource =
+      typeof requestBody?.key_source === "string"
+        ? requestBody.key_source
+        : requestUrl.searchParams.get("key_source");
+
+    const { key: primaryKey, source: primarySource } = resolveApiKey(preferredKeySource);
+    console.log(`Using key source: ${primarySource}`);
+    console.log(`patch_agent_config=${patchAgentConfig}`);
+
+    let result = await runPipeline(primaryKey, primarySource, { patchAgentConfig });
+
+    // Fallback: if primary key failed with permission error, try the other key
+    if (!result.success && result.diagnostics?.some((d: OpResult) => d.status === 401 || d.status === 403 || d.status === 404)) {
+      const fallbackKey = primarySource === "custom"
+        ? Deno.env.get("ELEVENLABS_API_KEY")?.trim()
+        : Deno.env.get("ELEVENLABS_API_KEY_CUSTOM")?.trim();
+
+      if (fallbackKey) {
+        const fallbackSource = primarySource === "custom" ? "connector" : "custom";
+        console.log(`Primary key (${primarySource}) hit permission error. Trying fallback (${fallbackSource})...`);
+        result = await runPipeline(fallbackKey, fallbackSource, { patchAgentConfig });
+      }
+    }
+
+    if (!result.success) {
+      return new Response(
+        JSON.stringify({
+          error: result.error,
+          key_source: result.key_source,
+          diagnostics: result.diagnostics,
+        }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    const inspectedAgentConfig = inspectAgentConfig
+      ? await summarizeAgentConfig(primaryKey, result.agent_id)
+      : undefined;
+
+    return new Response(
+      JSON.stringify({
+        token: result.token,
+        signed_url: result.signed_url,
+        agent_id: result.agent_id,
+        key_source: result.key_source,
+        patched_agent_config: patchAgentConfig,
+        inspected_agent_config: inspectedAgentConfig,
+      }),
+      {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+  } catch (error: unknown) {
+    console.error("Top-level error:", error);
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    return new Response(JSON.stringify({ error: msg }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+});
