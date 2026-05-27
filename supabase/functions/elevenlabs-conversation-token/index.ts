@@ -7,8 +7,8 @@ const corsHeaders = {
 };
 
 const AGENT_NAME = "Sam - Hair Systems";
-const PREFERRED_VOICE_ID = "oqnGPLczFm7QLPdseXmp";
-const FALLBACK_VOICE_ID = "oqnGPLczFm7QLPdseXmp"; // Chris (known-good default)
+const PREFERRED_VOICE_ID = "MLYh6nMBzkBX3opuXPEc";
+const FALLBACK_VOICE_ID = "MLYh6nMBzkBX3opuXPEc";
 const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
 
 const SAM_SCRIPT = `You are Sam — a real dude who books consults for {{company_name}}. You're talking to someone who's been looking into hair systems or hair loss options.
