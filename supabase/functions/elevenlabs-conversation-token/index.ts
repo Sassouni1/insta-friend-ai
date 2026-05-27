@@ -207,11 +207,11 @@ const SAM_CONVERSATION_CONFIG = {
   tts: {
     model_id: "eleven_flash_v2",
     voice_id: FALLBACK_VOICE_ID,
-    stability: 0.50,
-    similarity_boost: 0.75,
-    style: 0.40,
+    stability: 0.72,
+    similarity_boost: 0.80,
+    style: 0.0,
     use_speaker_boost: true,
-    speed: 1.0,
+    speed: 0.95,
   },
 };
 
