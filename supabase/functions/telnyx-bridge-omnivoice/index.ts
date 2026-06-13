@@ -1179,6 +1179,10 @@ Deno.serve(async (req) => {
         case "audio": {
           const b64 = msg.audio_event?.audio_base_64;
           if (!b64) break;
+          // OmniVoice sandbox: suppress EL audio for selected agent kinds so we don't double-speak.
+          if (omniActiveFor(botKind)) {
+            break;
+          }
           if (suppressAgentAudioUntilUser && !firstUserTranscriptSeen) {
             if (samRoute === "outbound") {
               // Sam outbound: never suppress agent audio.
