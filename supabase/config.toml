@@ -38,3 +38,10 @@ verify_jwt = false
 
 [functions.scheduled-call-worker]
 verify_jwt = false
+
+[functions.telnyx-bridge-omnivoice]
+verify_jwt = false
+
+[functions.telnyx-outbound-call-omnivoice]
+verify_jwt = false
+
