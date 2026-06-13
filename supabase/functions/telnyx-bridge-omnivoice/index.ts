@@ -739,7 +739,79 @@ Deno.serve(async (req) => {
     flushAgentAudioQueue();
   }
 
-  console.log(`[bridge ${conversationId}] params bot=${botKind} direction=${callDirection || "-"} route=${samRoute} tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"}`);
+  // ---- OmniVoice TTS sandbox: synth text -> 24k PCM -> 8k PCMU -> Telnyx ----
+  async function synthAndEnqueueOmniVoice(text: string) {
+    if (!omniActiveFor(botKind)) return;
+    if (!text || !text.trim()) return;
+    const started = Date.now();
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), OMNIVOICE_TIMEOUT_MS);
+      const res = await fetch(`${OMNIVOICE_TTS_URL}/synthesize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text,
+          voice: "custom",
+          instruct: OMNIVOICE_INSTRUCT,
+          num_step: OMNIVOICE_NUM_STEP,
+        }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
+      if (!res.ok) {
+        console.error(`[bridge ${conversationId}] [omni] synth HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        return;
+      }
+      const data = await res.json();
+      const b64 = data?.audio_base64;
+      const sr = Number(data?.sample_rate || 24000);
+      if (!b64) { console.error(`[bridge ${conversationId}] [omni] missing audio_base64`); return; }
+      const pcm = base64ToInt16(b64);
+      let pcm8: Int16Array;
+      if (sr === 24000) pcm8 = downsample24to8(pcm);
+      else if (sr === 16000) pcm8 = downsample16to8(pcm);
+      else if (sr === 8000) pcm8 = pcm;
+      else {
+        // crude: assume 24k if unknown
+        console.warn(`[bridge ${conversationId}] [omni] unexpected sample_rate=${sr}, treating as 24k`);
+        pcm8 = downsample24to8(pcm);
+      }
+      // gain + clip
+      for (let i = 0; i < pcm8.length; i++) {
+        let v = (pcm8[i] * TELEPHONY_OUTPUT_GAIN) | 0;
+        if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
+        pcm8[i] = v;
+      }
+      const ulaw = pcm16ToMulaw(pcm8);
+      // chunk into TELNYX_AGENT_PACKET_BYTES (40ms) packets and enqueue
+      let packets = 0;
+      for (let i = 0; i + TELNYX_AGENT_PACKET_BYTES <= ulaw.length; i += TELNYX_AGENT_PACKET_BYTES) {
+        agentAudioQueue.push(uint8ToBase64(ulaw.subarray(i, i + TELNYX_AGENT_PACKET_BYTES)));
+        queuedAgentAudioPackets++;
+        queuedAgentAudioFrames += TELNYX_AGENT_PACKET_BYTES / TELNYX_PCMU_FRAME_BYTES;
+        packets++;
+      }
+      const tail = ulaw.length % TELNYX_AGENT_PACKET_BYTES;
+      if (tail > 0) {
+        const padded = new Uint8Array(TELNYX_AGENT_PACKET_BYTES);
+        padded.set(ulaw.subarray(ulaw.length - tail));
+        padded.fill(0xff, tail);
+        agentAudioQueue.push(uint8ToBase64(padded));
+        queuedAgentAudioPackets++;
+        queuedAgentAudioFrames += TELNYX_AGENT_PACKET_BYTES / TELNYX_PCMU_FRAME_BYTES;
+        packets++;
+      }
+      if (agentAudioQueue.length > maxAgentQueueDepth) maxAgentQueueDepth = agentAudioQueue.length;
+      console.log(`[bridge ${conversationId}] [omni] synth ok textLen=${text.length} sr=${sr} pcm8=${pcm8.length} packets=${packets} ms=${Date.now() - started}`);
+      flushAgentAudioQueue();
+    } catch (err) {
+      console.error(`[bridge ${conversationId}] [omni] synth error: ${(err as Error).message}`);
+    }
+  }
+
+  console.log(`[bridge ${conversationId}] params bot=${botKind} direction=${callDirection || "-"} route=${samRoute} tenant=${tenantId} caller=${callerPhone} name=${callerName || "-"} omni=${omniActiveFor(botKind)}`);
+
 
   let connectedAt: number | null = null;
   let startSeen = false;
