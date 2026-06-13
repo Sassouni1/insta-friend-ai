@@ -24,6 +24,33 @@ const TELNYX_AGENT_PACKET_BYTES = TELNYX_PCMU_FRAME_BYTES * 2; // 40ms packets k
 const TELEPHONY_AGENT_OUTPUT_FORMAT = "pcm_16000";
 const TELEPHONY_OUTPUT_GAIN = 0.78; // add headroom before μ-law encoding so PSTN playback does not clip/crackle
 
+// =====================================================================================
+// OmniVoice TTS sandbox config — only active in this telnyx-bridge-omnivoice copy.
+// When OMNIVOICE_TTS_ENABLED !== "true" OR OMNIVOICE_TTS_URL missing, this bridge behaves
+// exactly like the live telnyx-bridge (ElevenLabs TTS passthrough).
+// =====================================================================================
+const OMNIVOICE_TTS_ENABLED = (Deno.env.get("OMNIVOICE_TTS_ENABLED") || "").toLowerCase() === "true";
+const OMNIVOICE_TTS_URL = (Deno.env.get("OMNIVOICE_TTS_URL") || "").replace(/\/+$/, "");
+const OMNIVOICE_INSTRUCT = Deno.env.get("OMNIVOICE_INSTRUCT") || "male, american accent, middle-aged, moderate pitch";
+const OMNIVOICE_NUM_STEP = Number(Deno.env.get("OMNIVOICE_NUM_STEP") || "4");
+const OMNIVOICE_TIMEOUT_MS = Number(Deno.env.get("OMNIVOICE_TIMEOUT_MS") || "12000");
+const OMNIVOICE_AGENT_KINDS = (Deno.env.get("OMNIVOICE_AGENT_KINDS") || "sam")
+  .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+
+function omniActiveFor(botKind: string): boolean {
+  return OMNIVOICE_TTS_ENABLED && !!OMNIVOICE_TTS_URL && OMNIVOICE_AGENT_KINDS.includes(botKind);
+}
+
+// Linear decimation 24k -> 8k (drop 2 of every 3 samples after a tiny average).
+function downsample24to8(pcm24: Int16Array): Int16Array {
+  const outLen = Math.floor(pcm24.length / 3);
+  const out = new Int16Array(outLen);
+  for (let i = 0, j = 0; j < outLen; i += 3, j++) {
+    out[j] = ((pcm24[i] + pcm24[i + 1] + pcm24[i + 2]) / 3) | 0;
+  }
+  return out;
+}
+
 const SAM_OUTBOUND_PROMPT = `You are Sam — a real dude calling a lead back who just clicked {{company_name}}'s ad about hair systems. Lead's first name: {{first_name}}. Full name: {{caller_name}}.
 
 You are NOT an AI, assistant, or bot. You're a guy on the phone. Period.
