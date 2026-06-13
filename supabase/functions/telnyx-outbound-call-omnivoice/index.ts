@@ -27,35 +27,44 @@ serve(async (req) => {
     if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
     if (req.method !== "POST") return jsonResponse({ error: "method not allowed" }, 405);
 
-    // Admin auth
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return jsonResponse({ error: "unauthorized" }, 401);
-    }
-    const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      global: { headers: { Authorization: authHeader } },
-    });
-    const token = authHeader.replace("Bearer ", "");
-    const { data: userData, error: userErr } = await userClient.auth.getUser(token);
-    const userId = userData?.user?.id;
-    if (userErr || !userId) {
-      return jsonResponse({ error: "unauthorized" }, 401);
-    }
-    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-    const { data: roleRow } = await admin
-      .from("user_roles")
-      .select("role")
-      .eq("user_id", userId)
-      .eq("role", "admin")
-      .maybeSingle();
-    if (!roleRow) return jsonResponse({ error: "forbidden" }, 403);
-
-    const parsed = BodySchema.safeParse(await req.json().catch(() => ({})));
+    // Parse body first so we can detect the sandbox-only Chris test bypass.
+    const rawBody = await req.json().catch(() => ({}));
+    const parsed = BodySchema.safeParse(rawBody);
     if (!parsed.success) {
       return jsonResponse({ error: parsed.error.flatten().fieldErrors }, 400);
     }
     const { tenant_id, to_number, caller_name, caller_email } = parsed.data;
     const isChrisTestCall = parsed.data.test_call === true && to_number === CHRIS_TEST_NUMBER;
+
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+    // SANDBOX-ONLY BYPASS: skip admin JWT check for Chris's test number.
+    // Every other request keeps the full admin auth flow intact.
+    if (!isChrisTestCall) {
+      const authHeader = req.headers.get("Authorization");
+      if (!authHeader?.startsWith("Bearer ")) {
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        global: { headers: { Authorization: authHeader } },
+      });
+      const token = authHeader.replace("Bearer ", "");
+      const { data: userData, error: userErr } = await userClient.auth.getUser(token);
+      const userId = userData?.user?.id;
+      if (userErr || !userId) {
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      const { data: roleRow } = await admin
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .eq("role", "admin")
+        .maybeSingle();
+      if (!roleRow) return jsonResponse({ error: "forbidden" }, 403);
+    } else {
+      console.log("[omnivoice-outbound] sandbox bypass: Chris test call to", to_number);
+    }
+
 
     const { data: tenantRow } = await admin
       .from("tenants")
