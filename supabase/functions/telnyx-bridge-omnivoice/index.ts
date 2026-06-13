@@ -1246,9 +1246,16 @@ Deno.serve(async (req) => {
             if (botKind === "chris" && isPracticeGoodbye(text)) {
               schedulePracticeHangup("practice caller ended");
             }
+            // OmniVoice sandbox: synth text via OmniVoice and stream to Telnyx.
+            if (omniActiveFor(botKind)) {
+              synthAndEnqueueOmniVoice(text).catch((e) =>
+                console.error(`[bridge ${conversationId}] [omni] unhandled: ${(e as Error).message}`),
+              );
+            }
           }
           break;
         }
+
 
         case "ping":
           socket.send(JSON.stringify({
