@@ -19,9 +19,8 @@ const SAM_AGENT_NAME = "Sam - Hair Systems";
 const SAM_OUTBOUND_AGENT_NAME = "Sam - Hair Systems Outbound Booking Stable";
 const CHRIS_AGENT_NAME = "Chris - Practice Caller";
 const DEFAULT_CHRIS_VOICE_ID = "oqnGPLczFm7QLPdseXmp";
-// ElevenLabs premade voice: "Chris - Charming, Down-to-Earth".
-// This is the voice used by the successful July 10 live booking call.
-const SAM_VOICE_ID = "iP95p4xoKVk53GoZ742B";
+// ElevenLabs Voice Library PVC: "Sam Chang - Persuasive and Relaxed".
+const SAM_VOICE_ID = "rYW2LlWtM70M5vc3HBtm";
 const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
 const TELNYX_PCMU_FRAME_BYTES = 160; // 20ms of 8k μ-law audio
 const TELNYX_AGENT_PACKET_BYTES = TELNYX_PCMU_FRAME_BYTES * 2; // 40ms packets keep RTP payloads small and steady on PSTN
@@ -378,9 +377,12 @@ function buildSamOutboundConversationConfig(calendarToolId?: string | null, firs
       model_id: "eleven_flash_v2",
       voice_id: SAM_VOICE_ID,
       agent_output_audio_format: TELEPHONY_AGENT_OUTPUT_FORMAT,
-      stability: 0.72,
-      similarity_boost: 0.75,
-      speed: 0.95,
+      // Match the Voice Library tuning published for Sam Chang. ElevenAgents
+      // supports these three voice controls; speaker boost remains enabled in
+      // the saved voice settings, while style is not part of the agent schema.
+      stability: 0.43,
+      similarity_boost: 0.64,
+      speed: 0.94,
     },
   };
 }
