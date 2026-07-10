@@ -9,6 +9,8 @@ import {
   uint8ToBase64,
   upsample8to16,
 } from "../_shared/audio.ts";
+import { registerEdgeLifetime } from "../_shared/edge-lifetime.ts";
+import type { EdgeRuntimeWaitUntil } from "../_shared/edge-lifetime.ts";
 import { telnyxCallControl } from "../_shared/telnyx.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -534,6 +536,13 @@ Deno.serve(async (req) => {
   }
 
   const { socket: telnyxSocket, response } = Deno.upgradeWebSocket(req);
+  const edgeRuntime = (globalThis as typeof globalThis & { EdgeRuntime?: EdgeRuntimeWaitUntil }).EdgeRuntime;
+  const bridgeLifetime = registerEdgeLifetime(edgeRuntime);
+  if (bridgeLifetime.registered) {
+    console.log(`[bridge ${conversationId}] EdgeRuntime.waitUntil registered for Telnyx WebSocket lifetime`);
+  } else {
+    console.warn(`[bridge ${conversationId}] EdgeRuntime.waitUntil unavailable; WebSocket worker is not protected from EarlyDrop`);
+  }
 
   let elSocket: WebSocket | null = null;
   let elConnecting = false;
@@ -740,27 +749,32 @@ Deno.serve(async (req) => {
     try {
       if (elSocket && elSocket.readyState < 2) elSocket.close();
     } catch {}
-    supabase
-      .from("conversations")
-      .update({
-        ended_at: new Date().toISOString(),
-        media_frame_count: telnyxMediaCount,
-        inbound_speech_frame_count: inboundSpeechFrameCount,
-        first_inbound_speech_at: firstInboundSpeechAt,
-        bridge_calendar_tool_call_count: calendarToolCallCount,
-        bridge_calendar_tool_error_count: calendarToolErrorCount,
-        bridge_last_calendar_tool_name: lastCalendarToolName,
-        bridge_last_calendar_tool_params: lastCalendarToolParams,
-        bridge_last_calendar_tool_result: lastCalendarToolResult,
-        bridge_last_calendar_tool_error: lastCalendarToolError,
-        bridge_last_calendar_tool_at: lastCalendarToolAt,
-      })
-      .eq("id", conversationId)
-      .then(() => {});
-
-    // Persistent close diagnostic
-    (async () => {
+    // Keep the worker alive through both the live socket and final persistence.
+    // Resolving this promise is what allows Supabase to retire the worker after
+    // a normal call end; until then, EarlyDrop must not classify it as idle.
+    void (async () => {
       try {
+        const { error: conversationUpdateError } = await supabase
+          .from("conversations")
+          .update({
+            ended_at: new Date().toISOString(),
+            media_frame_count: telnyxMediaCount,
+            inbound_speech_frame_count: inboundSpeechFrameCount,
+            first_inbound_speech_at: firstInboundSpeechAt,
+            bridge_calendar_tool_call_count: calendarToolCallCount,
+            bridge_calendar_tool_error_count: calendarToolErrorCount,
+            bridge_last_calendar_tool_name: lastCalendarToolName,
+            bridge_last_calendar_tool_params: lastCalendarToolParams,
+            bridge_last_calendar_tool_result: lastCalendarToolResult,
+            bridge_last_calendar_tool_error: lastCalendarToolError,
+            bridge_last_calendar_tool_at: lastCalendarToolAt,
+          })
+          .eq("id", conversationId);
+        if (conversationUpdateError) {
+          console.error(`[bridge ${conversationId}] close-state update error: ${conversationUpdateError.message}`);
+        }
+
+        // Persistent close diagnostic
         const avg = payloadBytesCount > 0 ? Math.round(payloadBytesSum / payloadBytesCount) : 0;
         const minB = payloadBytesMin === Number.POSITIVE_INFINITY ? 0 : payloadBytesMin;
         const closeText = `[BRIDGE_DIAGNOSTIC_CLOSE] queued_frames=${queuedAgentAudioFrames} sent_frames=${sentAgentAudioFrames} queued_packets=${queuedAgentAudioPackets} sent_packets=${sentAgentAudioPackets} dropped_packets=${droppedAgentAudioPackets} non_packet_multiple=${nonStandardFrameCount} min_bytes=${minB} max_bytes=${payloadBytesMax} avg_bytes=${avg}`;
@@ -775,7 +789,9 @@ Deno.serve(async (req) => {
           console.log(`[bridge ${conversationId}] BRIDGE_DIAGNOSTIC_CLOSE inserted: ${closeText}`);
         }
       } catch (e) {
-        console.error(`[bridge ${conversationId}] BRIDGE_DIAGNOSTIC_CLOSE insert threw: ${(e as Error).message}`);
+        console.error(`[bridge ${conversationId}] close persistence threw: ${(e as Error).message}`);
+      } finally {
+        bridgeLifetime.resolve();
       }
     })();
   };
