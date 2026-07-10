@@ -3,7 +3,7 @@ create extension if not exists pg_cron with schema extensions;
 create extension if not exists pg_net with schema extensions;
 
 alter table public.tenants add column if not exists webhook_secret text;
-update public.tenants set webhook_secret = encode(gen_random_bytes(16), 'hex') where webhook_secret is null;
+update public.tenants set webhook_secret = encode(extensions.gen_random_bytes(16), 'hex') where webhook_secret is null;
 
 create table if not exists public.scheduled_calls (
   id uuid primary key default gen_random_uuid(),

@@ -7,7 +7,7 @@ export default function OAuthCallback() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const callbackUrl = `https://quezinwuuxzyqsntzicm.supabase.co/functions/v1/crm-oauth-callback?${params.toString()}`;
+    const callbackUrl = `https://prjzhyzgfphiajhguzzu.supabase.co/functions/v1/crm-oauth-callback?${params.toString()}`;
 
     fetch(callbackUrl)
       .then((r) => r.text())
