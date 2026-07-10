@@ -8,10 +8,14 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const TENANT_ID = "8ad5b297-2581-4953-91bb-7cef9a8f2080";
+const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
 
 const AvailabilitySchema = z.object({
   action: z.literal("availability"),
   tenant_id: z.string().uuid().optional(),
+  conversation_id: z.string().uuid().optional(),
+  elevenlabs_conversation_id: z.string().optional(),
+  caller_phone: z.string().min(8).optional(),
   days_ahead: z.number().int().min(1).max(30).default(7),
   preference: z.string().optional(),
   timezone: z.string().optional(),
@@ -21,6 +25,7 @@ const BookSchema = z.object({
   action: z.literal("book"),
   tenant_id: z.string().uuid().optional(),
   conversation_id: z.string().uuid().optional(),
+  elevenlabs_conversation_id: z.string().optional(),
   caller_name: z.string().min(1).default("Chris"),
   caller_phone: z.string().min(8),
   caller_email: z.preprocess((value) => value === "" ? undefined : value, z.string().email().optional()),
@@ -28,6 +33,84 @@ const BookSchema = z.object({
 });
 
 const BodySchema = z.discriminatedUnion("action", [AvailabilitySchema, BookSchema]);
+
+type AuditParams = {
+  tenantId: string;
+  conversationId?: string;
+  callerPhone?: string;
+};
+
+async function resolveConversationId(supabase: any, params: AuditParams): Promise<string | null> {
+  if (params.conversationId) return params.conversationId;
+  if (!params.callerPhone) return null;
+
+  const { data } = await supabase
+    .from("conversations")
+    .select("id")
+    .eq("tenant_id", params.tenantId)
+    .eq("caller_phone", params.callerPhone)
+    .eq("direction", "outbound")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return data?.id || null;
+}
+
+async function recordToolStart(supabase: any, conversationId: string | null, parameters: Record<string, unknown>) {
+  if (!conversationId) return;
+  try {
+    const { data: row } = await supabase
+      .from("conversations")
+      .select("bridge_calendar_tool_call_count")
+      .eq("id", conversationId)
+      .maybeSingle();
+    await supabase
+      .from("conversations")
+      .update({
+        bridge_calendar_tool_call_count: Number(row?.bridge_calendar_tool_call_count || 0) + 1,
+        bridge_last_calendar_tool_name: CALENDAR_TOOL_NAME,
+        bridge_last_calendar_tool_params: parameters,
+        bridge_last_calendar_tool_result: null,
+        bridge_last_calendar_tool_error: null,
+        bridge_last_calendar_tool_at: new Date().toISOString(),
+      })
+      .eq("id", conversationId);
+  } catch (error) {
+    console.error("[ghl-calendar-tool] audit start failed", error);
+  }
+}
+
+async function recordToolResult(supabase: any, conversationId: string | null, result: Record<string, unknown>) {
+  if (!conversationId) return;
+  try {
+    await supabase
+      .from("conversations")
+      .update({ bridge_last_calendar_tool_result: result, bridge_last_calendar_tool_error: null })
+      .eq("id", conversationId);
+  } catch (error) {
+    console.error("[ghl-calendar-tool] audit result failed", error);
+  }
+}
+
+async function recordToolError(supabase: any, conversationId: string | null, errorMessage: string) {
+  if (!conversationId) return;
+  try {
+    const { data: row } = await supabase
+      .from("conversations")
+      .select("bridge_calendar_tool_error_count")
+      .eq("id", conversationId)
+      .maybeSingle();
+    await supabase
+      .from("conversations")
+      .update({
+        bridge_calendar_tool_error_count: Number(row?.bridge_calendar_tool_error_count || 0) + 1,
+        bridge_last_calendar_tool_error: errorMessage.slice(0, 1000),
+      })
+      .eq("id", conversationId);
+  } catch (error) {
+    console.error("[ghl-calendar-tool] audit error failed", error);
+  }
+}
 
 function formatSlotForSpeech(slotIso: string, timezone: string): string {
   return new Intl.DateTimeFormat("en-US", {
@@ -121,6 +204,12 @@ serve(async (req) => {
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const tenantId = parsed.data.tenant_id || TENANT_ID;
+  const auditConversationId = await resolveConversationId(supabase, {
+    tenantId,
+    conversationId: parsed.data.conversation_id,
+    callerPhone: parsed.data.caller_phone,
+  });
+  await recordToolStart(supabase, auditConversationId, parsed.data as Record<string, unknown>);
   const { data: tenant, error } = await supabase
     .from("tenants")
     .select("ghl_calendar_id, timezone")
@@ -128,6 +217,7 @@ serve(async (req) => {
     .maybeSingle();
 
   if (error || !tenant?.ghl_calendar_id) {
+    await recordToolError(supabase, auditConversationId, "tenant ghl config incomplete");
     return jsonResponse({ error: "tenant ghl config incomplete" }, 400);
   }
 
@@ -155,8 +245,10 @@ serve(async (req) => {
         };
       });
 
-      return jsonResponse({
+      const result = {
         ok: true,
+        booking_confirmed: false,
+        elevenlabs_conversation_id: parsed.data.elevenlabs_conversation_id || null,
         timezone,
         total_available: all.length,
         total_matching_preference: filtered.length,
@@ -165,16 +257,21 @@ serve(async (req) => {
         instruction: options.length
           ? "Offer two options to the caller. Remember each option number and exact slot_iso. If they choose one, call this tool again with action=book and that exact slot_iso."
           : "No matching slots were found for that preference. Ask for a different time window, then call availability again.",
-      });
+      };
+      await recordToolResult(supabase, auditConversationId, result);
+      return jsonResponse(result);
     }
 
     if (!parsed.data.caller_email) {
-      return jsonResponse({
+      const result = {
         ok: false,
+        booking_confirmed: false,
         needs_email: true,
         error: "caller_email required before booking",
         instruction: "Ask: Real quick, what's the best email to put on file? Then call this tool again with the same slot_iso and caller_email.",
-      }, 400);
+      };
+      await recordToolError(supabase, auditConversationId, result.error);
+      return jsonResponse(result, 400);
     }
 
     const [firstName, ...rest] = parsed.data.caller_name.trim().split(/\s+/);
@@ -192,7 +289,7 @@ serve(async (req) => {
 
     await supabase.from("bookings").insert({
       tenant_id: tenantId,
-      conversation_id: parsed.data.conversation_id || null,
+      conversation_id: auditConversationId,
       caller_name: parsed.data.caller_name,
       caller_phone: parsed.data.caller_phone,
       caller_email: parsed.data.caller_email || null,
@@ -201,14 +298,20 @@ serve(async (req) => {
       status: "confirmed",
     });
 
-    return jsonResponse({
+    const result = {
       ok: true,
+      booking_confirmed: true,
       appointment_id: appt.id,
       contact_id: contact.id,
+      elevenlabs_conversation_id: parsed.data.elevenlabs_conversation_id || null,
       confirmation: `Booked ${parsed.data.caller_name} for ${formatSlotForSpeech(parsed.data.slot_iso, tenant.timezone)}.`,
-    });
+    };
+    await recordToolResult(supabase, auditConversationId, result);
+    return jsonResponse(result);
   } catch (err: any) {
     console.error("[ghl-calendar-tool]", err);
-    return jsonResponse({ ok: false, error: err.message || "failed" }, 500);
+    const errorMessage = err.message || "failed";
+    await recordToolError(supabase, auditConversationId, errorMessage);
+    return jsonResponse({ ok: false, booking_confirmed: false, error: errorMessage }, 500);
   }
 });

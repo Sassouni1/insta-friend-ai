@@ -19,7 +19,9 @@ const SAM_AGENT_NAME = "Sam - Hair Systems";
 const SAM_OUTBOUND_AGENT_NAME = "Sam - Hair Systems Outbound Booking Stable";
 const CHRIS_AGENT_NAME = "Chris - Practice Caller";
 const DEFAULT_CHRIS_VOICE_ID = "oqnGPLczFm7QLPdseXmp";
-const SAM_VOICE_ID = "oqnGPLczFm7QLPdseXmp";
+// ElevenLabs premade voice: "Chris - Charming, Down-to-Earth".
+// This is the voice used by the successful July 10 live booking call.
+const SAM_VOICE_ID = "iP95p4xoKVk53GoZ742B";
 const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
 const TELNYX_PCMU_FRAME_BYTES = 160; // 20ms of 8k μ-law audio
 const TELNYX_AGENT_PACKET_BYTES = TELNYX_PCMU_FRAME_BYTES * 2; // 40ms packets keep RTP payloads small and steady on PSTN
@@ -82,6 +84,14 @@ Once they give a preference:
 - If {{caller_email}} missing, ask: "What's the best email for the confirm?"
 - Then call ${CALENDAR_TOOL_NAME} with action="book", tenant_id="{{tenant_id}}", conversation_id="{{conversation_id}}", caller_name="{{caller_name}}", caller_phone="{{caller_phone}}", caller_email, slot_iso.
 - Only confirm booked after tool success.
+
+== BOOKING TRUTH GATE ==
+- Availability is real only after ${CALENDAR_TOOL_NAME} action="availability" returns ok=true in THIS conversation.
+- A booking is confirmed only after ${CALENDAR_TOOL_NAME} action="book" returns booking_confirmed=true AND a non-empty appointment_id.
+- Never invent, estimate, or reuse a slot that was not returned by the current availability call.
+- Never say "booked", "confirmed", or promise a confirmation email when the book tool failed, timed out, or returned no appointment_id.
+- Before calling book, read the email back clearly and get an explicit yes. Never book an email the caller has not confirmed.
+- If booking is not verified, say you could not lock it in yet and either retry the tool once or offer a human follow-up.
 
 == OBJECTIONS (keep replies SHORT + empathetic, never a pitch) ==
 - "How much?" → "Honest answer — depends on the system. That's literally what the consult's for, so you're not guessing. It's free."
@@ -198,60 +208,96 @@ function buildChrisConversationConfig(script: string) {
 
 function buildCalendarToolConfig() {
   return {
-    type: "client",
+    type: "webhook",
     name: CALENDAR_TOOL_NAME,
     description:
-      "Check real GoHighLevel calendar availability and book a consultation appointment. Use action=availability before offering times. Use action=book only after the caller chooses an exact slot_iso.",
-    expects_response: true,
+      "Check real GoHighLevel availability and book the selected consultation. You MUST call availability before offering times. You MUST call book after the caller chooses an exact returned slot. Never verbally confirm a booking unless book returns booking_confirmed=true and a non-empty appointment_id.",
     response_timeout_secs: 20,
     disable_interruptions: true,
-    force_pre_tool_speech: true,
-    parameters: {
-      type: "object",
-      required: ["action"],
-      properties: {
-        action: {
-          type: "string",
-          enum: ["availability", "book"],
-          description: "Use availability to fetch real open slots; use book to create the appointment.",
-        },
-        days_ahead: {
-          type: "integer",
-          description: "For availability only. Number of days ahead to search. Default is 7.",
-        },
-        preference: {
-          type: "string",
-          description: "For availability only. Caller scheduling preference, such as morning, afternoon, later, next week, Tuesday, or after 2.",
-        },
-        timezone: {
-          type: "string",
-          description: "For availability only. Timezone to use for speaking and filtering slots, such as America/New_York.",
-        },
-        tenant_id: {
-          type: "string",
-          description: "Tenant id. Use the known tenant_id dynamic variable.",
-        },
-        conversation_id: {
-          type: "string",
-          description: "For booking. Use the known conversation_id dynamic variable.",
-        },
-        slot_iso: {
-          type: "string",
-          description: "For booking only. Exact ISO datetime chosen from a prior availability response.",
-        },
-        caller_name: {
-          type: "string",
-          description: "Caller name. Use the known caller_name dynamic variable when available.",
-        },
-        caller_phone: {
-          type: "string",
-          description: "Caller phone number. Use the known caller_phone dynamic variable.",
-        },
-        caller_email: {
-          type: "string",
-          description: "For booking. Caller email. If missing, ask the caller for the best email.",
+    interruption_mode: "disable_during_tool",
+    force_pre_tool_speech: false,
+    pre_tool_speech: "force",
+    tool_error_handling_mode: "passthrough",
+    assignments: [
+      {
+        dynamic_variable: "booking_verified",
+        value_path: "booking_confirmed",
+        source: "response",
+        sanitize: false,
+        preserve_native_type: true,
+      },
+      {
+        dynamic_variable: "booked_appointment_id",
+        value_path: "appointment_id",
+        source: "response",
+        sanitize: true,
+        preserve_native_type: false,
+      },
+      {
+        dynamic_variable: "booking_confirmation",
+        value_path: "confirmation",
+        source: "response",
+        sanitize: true,
+        preserve_native_type: false,
+      },
+    ],
+    dynamic_variables: {
+      dynamic_variable_placeholders: {
+        tenant_id: "8ad5b297-2581-4953-91bb-7cef9a8f2080",
+        conversation_id: "00000000-0000-0000-0000-000000000000",
+        caller_phone: "+15555550100",
+        tenant_timezone: "America/New_York",
+      },
+    },
+    execution_mode: "immediate",
+    api_schema: {
+      request_headers: { "Content-Type": "application/json" },
+      url: `${SUPABASE_URL}/functions/v1/ghl-calendar-tool`,
+      method: "POST",
+      path_params_schema: {},
+      query_params_schema: null,
+      request_body_schema: {
+        type: "object",
+        required: ["action"],
+        description: "Real calendar availability and booking payload.",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["availability", "book"],
+            description: "Use availability to fetch real slots. Use book only with an exact slot_iso returned by availability.",
+          },
+          days_ahead: {
+            type: "integer",
+            description: "For availability only. Search 7 days unless the caller asks for farther out.",
+          },
+          preference: {
+            type: "string",
+            description: "For availability only. The caller's requested window, such as morning, afternoon, Tuesday, or after 2 PM.",
+          },
+          timezone: { type: "string", dynamic_variable: "tenant_timezone" },
+          tenant_id: { type: "string", dynamic_variable: "tenant_id" },
+          conversation_id: { type: "string", dynamic_variable: "conversation_id" },
+          elevenlabs_conversation_id: { type: "string", dynamic_variable: "system__conversation_id" },
+          slot_iso: {
+            type: "string",
+            description: "For booking only. The exact slot_iso returned by the current availability call.",
+          },
+          caller_name: {
+            type: "string",
+            description: "For booking. The caller's name from the conversation or known lead details.",
+          },
+          caller_phone: { type: "string", dynamic_variable: "caller_phone" },
+          caller_email: {
+            type: "string",
+            description: "For booking. The caller's confirmed email address. Ask and read it back before booking.",
+          },
         },
       },
+      response_body_schema: null,
+      response_filter: null,
+      content_type: "application/json",
+      auth_resolved_params: [],
+      auth_connection: null,
     },
   };
 }
@@ -266,6 +312,15 @@ async function ensureCalendarToolId(apiKey: string): Promise<string | null> {
   if (list.ok) {
     const existing = (list.data?.tools || []).find((tool: any) => tool?.tool_config?.name === CALENDAR_TOOL_NAME);
     if (existing?.id) {
+      const patched = await elevenLabsJson(`https://api.elevenlabs.io/v1/convai/tools/${existing.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ tool_config: buildCalendarToolConfig() }),
+      });
+      if (!patched.ok) {
+        console.error(`[bridge] patch ${CALENDAR_TOOL_NAME} failed ${patched.status}: ${patched.text.slice(0, 300)}`);
+        return null;
+      }
       cachedCalendarToolId = existing.id;
       return cachedCalendarToolId;
     }
@@ -320,14 +375,12 @@ function buildSamOutboundConversationConfig(calendarToolId?: string | null, firs
       ],
     },
     tts: {
-      model_id: "eleven_turbo_v2_5",
+      model_id: "eleven_flash_v2",
       voice_id: SAM_VOICE_ID,
       agent_output_audio_format: TELEPHONY_AGENT_OUTPUT_FORMAT,
-      stability: 0.50,
+      stability: 0.72,
       similarity_boost: 0.75,
-      style: 0.40,
-      use_speaker_boost: true,
-      speed: 1.0,
+      speed: 0.95,
     },
   };
 }
@@ -343,7 +396,12 @@ async function elevenLabsJson(
   return { ok: res.ok, status: res.status, data, text };
 }
 
-async function ensureAgentId(apiKey: string, name: string, conversationConfig?: Record<string, unknown>): Promise<string | null> {
+async function ensureAgentId(
+  apiKey: string,
+  name: string,
+  conversationConfig?: Record<string, unknown>,
+  requireConfigPatch = false,
+): Promise<string | null> {
   const headers = { "xi-api-key": apiKey, "Content-Type": "application/json" };
   const list = await elevenLabsJson("https://api.elevenlabs.io/v1/convai/agents", { headers });
   if (!list.ok) {
@@ -374,7 +432,9 @@ async function ensureAgentId(apiKey: string, name: string, conversationConfig?: 
       body: JSON.stringify({ name, conversation_config: conversationConfig }),
     });
     if (!patched.ok) {
-      console.warn(`[bridge] patch ${name} failed ${patched.status}: ${patched.text.slice(0, 300)}`);
+      const message = `patch ${name} failed ${patched.status}: ${patched.text.slice(0, 300)}`;
+      if (requireConfigPatch) throw new Error(message);
+      console.warn(`[bridge] ${message}`);
     }
   }
 
@@ -391,7 +451,7 @@ async function getOrFetchAgentId(apiKey: string, botKind: string, script: string
   if (samRoute === "outbound") {
     const calendarToolId = await ensureCalendarToolId(apiKey);
     if (!calendarToolId) {
-      console.warn(`[telnyx-bridge] ${CALENDAR_TOOL_NAME} unavailable; building outbound agent without tool_ids so Sam can still speak`);
+      throw new Error(`${CALENDAR_TOOL_NAME} unavailable; refusing to start an outbound booking agent without live tools`);
     }
     const firstName = usableFirstName(callerName);
     const firstMessage = firstName
@@ -402,6 +462,7 @@ async function getOrFetchAgentId(apiKey: string, botKind: string, script: string
       apiKey,
       SAM_OUTBOUND_AGENT_NAME,
       buildSamOutboundConversationConfig(calendarToolId, firstMessage),
+      true,
     );
     if (!outboundAgent) {
       throw new Error(`outbound_setup_failed: agent "${SAM_OUTBOUND_AGENT_NAME}" could not be created/fetched`);
@@ -754,13 +815,17 @@ Deno.serve(async (req) => {
     // a normal call end; until then, EarlyDrop must not classify it as idle.
     void (async () => {
       try {
-        const { error: conversationUpdateError } = await supabase
-          .from("conversations")
-          .update({
-            ended_at: new Date().toISOString(),
-            media_frame_count: telnyxMediaCount,
-            inbound_speech_frame_count: inboundSpeechFrameCount,
-            first_inbound_speech_at: firstInboundSpeechAt,
+        const closeState: Record<string, unknown> = {
+          ended_at: new Date().toISOString(),
+          media_frame_count: telnyxMediaCount,
+          inbound_speech_frame_count: inboundSpeechFrameCount,
+          first_inbound_speech_at: firstInboundSpeechAt,
+        };
+        // Webhook tools execute inside ElevenLabs and update these audit fields
+        // directly in ghl-calendar-tool. Do not overwrite that evidence with
+        // this bridge's zero-valued client-tool counters at call close.
+        if (calendarToolCallCount > 0 || lastCalendarToolAt) {
+          Object.assign(closeState, {
             bridge_calendar_tool_call_count: calendarToolCallCount,
             bridge_calendar_tool_error_count: calendarToolErrorCount,
             bridge_last_calendar_tool_name: lastCalendarToolName,
@@ -768,7 +833,11 @@ Deno.serve(async (req) => {
             bridge_last_calendar_tool_result: lastCalendarToolResult,
             bridge_last_calendar_tool_error: lastCalendarToolError,
             bridge_last_calendar_tool_at: lastCalendarToolAt,
-          })
+          });
+        }
+        const { error: conversationUpdateError } = await supabase
+          .from("conversations")
+          .update(closeState)
           .eq("id", conversationId);
         if (conversationUpdateError) {
           console.error(`[bridge ${conversationId}] close-state update error: ${conversationUpdateError.message}`);
@@ -1046,6 +1115,9 @@ Deno.serve(async (req) => {
             company_name: companyName || "Infinite Hair",
             tenant_timezone: tenantTimezone || "America/New_York",
             call_direction: callDirection,
+            booking_verified: false,
+            booked_appointment_id: "",
+            booking_confirmation: "",
           },
         }),
       );
