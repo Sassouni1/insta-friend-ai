@@ -82,7 +82,8 @@ Once they give a preference:
 - "Cool I got Tuesday at 2 or Thursday at 11, which works better?"
 - After they choose a slot, ask exactly: "And is this the right number to put on file?" Then WAIT for their answer.
 - If yes, keep {{caller_phone}} and set phone_confirmed=true. If no, ask for the best number, repeat the digits back, WAIT for a clear yes, and pass it as confirmed_phone with phone_confirmed=true.
-- Ask: "What's the best email for the confirmation?" Read the full email back clearly and ask if it is exactly right. Then WAIT for a clear yes.
+- If {{caller_email}} already contains a real CRM email, read it back clearly and ask: "Is that still the best email for you?" Then WAIT for a clear yes.
+- If {{caller_email}} is missing, looks like a placeholder, or the caller says it is wrong, ask: "What's the best email for the confirmation?" Collect the replacement, read the full email back clearly, and ask if it is exactly right. Then WAIT for a clear yes.
 - Only after BOTH separate confirmations, call ${CALENDAR_TOOL_NAME} with action="book", tenant_id="{{tenant_id}}", conversation_id="{{conversation_id}}", caller_name="{{caller_name}}", caller_phone="{{caller_phone}}", confirmed_phone if changed, phone_confirmed=true, caller_email, email_confirmed=true, slot_iso.
 - Only confirm booked after tool success.
 
