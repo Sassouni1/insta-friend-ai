@@ -28,7 +28,10 @@ const BookSchema = z.object({
   elevenlabs_conversation_id: z.string().optional(),
   caller_name: z.string().min(1).default("Chris"),
   caller_phone: z.string().min(8),
+  confirmed_phone: z.preprocess((value) => value === "" ? undefined : value, z.string().min(8).optional()),
+  phone_confirmed: z.boolean().optional().default(false),
   caller_email: z.preprocess((value) => value === "" ? undefined : value, z.string().email().optional()),
+  email_confirmed: z.boolean().optional().default(false),
   slot_iso: z.string().datetime({ offset: true }),
 });
 
@@ -39,6 +42,68 @@ type AuditParams = {
   conversationId?: string;
   callerPhone?: string;
 };
+
+type TranscriptEntry = {
+  role: string;
+  text: string;
+};
+
+function normalizeTranscriptText(text: string): string {
+  return text.toLowerCase().replace(/[’]/g, "'").replace(/[^a-z0-9@.+' -]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function isAffirmativeConfirmation(text: string): boolean {
+  const normalized = normalizeTranscriptText(text);
+  if (/\b(no|nope|not|wrong|incorrect)\b/.test(normalized)) return false;
+  return /^(yes|yeah|yep|correct|right|that's right|that is right|yes it is|it is|sure|mhm|mm hmm)\b/.test(normalized);
+}
+
+function isPhoneConfirmationPrompt(text: string): boolean {
+  const normalized = normalizeTranscriptText(text);
+  return (
+    /\b(right|best|correct|same|good)\b.{0,50}\bnumber\b/.test(normalized) ||
+    /\bnumber\b.{0,50}\b(right|best|correct|file)\b/.test(normalized)
+  );
+}
+
+function isEmailConfirmationPrompt(text: string): boolean {
+  const normalized = normalizeTranscriptText(text);
+  const mentionsEmailReadback = normalized.includes("@") || normalized.includes(" email ") || normalized.includes(" at ");
+  const asksForConfirmation = /\b(confirm|right|correct|did i get|is that)\b/.test(normalized);
+  return mentionsEmailReadback && asksForConfirmation;
+}
+
+function hasAffirmativeReplyAfter(
+  entries: TranscriptEntry[],
+  promptMatcher: (text: string) => boolean,
+): boolean {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (entry.role !== "agent" || !promptMatcher(entry.text)) continue;
+    for (let replyIndex = index + 1; replyIndex < entries.length; replyIndex++) {
+      const reply = entries[replyIndex];
+      if (reply.role !== "user") continue;
+      return isAffirmativeConfirmation(reply.text);
+    }
+  }
+  return false;
+}
+
+async function getContactConfirmationState(supabase: any, conversationId: string | null) {
+  if (!conversationId) return { phoneConfirmed: false, emailConfirmed: false };
+  const { data, error } = await supabase
+    .from("transcript_entries")
+    .select("role, text, created_at")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: false })
+    .limit(80);
+  if (error) throw new Error(`confirmation transcript lookup failed: ${error.message}`);
+  const entries = ((data || []) as TranscriptEntry[]).reverse();
+  return {
+    phoneConfirmed: hasAffirmativeReplyAfter(entries, isPhoneConfirmationPrompt),
+    emailConfirmed: hasAffirmativeReplyAfter(entries, isEmailConfirmationPrompt),
+  };
+}
 
 async function resolveConversationId(supabase: any, params: AuditParams): Promise<string | null> {
   if (params.conversationId) return params.conversationId;
@@ -262,6 +327,19 @@ serve(async (req) => {
       return jsonResponse(result);
     }
 
+    const confirmationState = await getContactConfirmationState(supabase, auditConversationId);
+    if (!parsed.data.phone_confirmed || !confirmationState.phoneConfirmed) {
+      const result = {
+        ok: false,
+        booking_confirmed: false,
+        needs_phone_confirmation: true,
+        error: "caller phone must be explicitly confirmed before booking",
+        instruction: "Ask: And is this the right number to put on file? Wait for a clear yes. If no, collect the correct number, repeat it, and wait for a clear yes before retrying book.",
+      };
+      await recordToolError(supabase, auditConversationId, result.error);
+      return jsonResponse(result, 409);
+    }
+
     if (!parsed.data.caller_email) {
       const result = {
         ok: false,
@@ -274,12 +352,25 @@ serve(async (req) => {
       return jsonResponse(result, 400);
     }
 
+    if (!parsed.data.email_confirmed || !confirmationState.emailConfirmed) {
+      const result = {
+        ok: false,
+        booking_confirmed: false,
+        needs_email_confirmation: true,
+        error: "caller email must be explicitly confirmed before booking",
+        instruction: "Read the email back clearly, ask if it is exactly right, and WAIT for a clear yes before retrying book.",
+      };
+      await recordToolError(supabase, auditConversationId, result.error);
+      return jsonResponse(result, 409);
+    }
+
+    const phoneOnFile = parsed.data.confirmed_phone || parsed.data.caller_phone;
     const [firstName, ...rest] = parsed.data.caller_name.trim().split(/\s+/);
     const contact = await client.upsertContact({
       firstName,
       lastName: rest.join(" ") || undefined,
       email: parsed.data.caller_email,
-      phone: parsed.data.caller_phone,
+      phone: phoneOnFile,
     });
     const appt = await client.createAppointment({
       calendarId: tenant.ghl_calendar_id,
@@ -291,7 +382,7 @@ serve(async (req) => {
       tenant_id: tenantId,
       conversation_id: auditConversationId,
       caller_name: parsed.data.caller_name,
-      caller_phone: parsed.data.caller_phone,
+      caller_phone: phoneOnFile,
       caller_email: parsed.data.caller_email || null,
       slot_iso: parsed.data.slot_iso,
       ghl_appointment_id: appt.id,
@@ -303,6 +394,7 @@ serve(async (req) => {
       booking_confirmed: true,
       appointment_id: appt.id,
       contact_id: contact.id,
+      phone_on_file: phoneOnFile,
       elevenlabs_conversation_id: parsed.data.elevenlabs_conversation_id || null,
       confirmation: `Booked ${parsed.data.caller_name} for ${formatSlotForSpeech(parsed.data.slot_iso, tenant.timezone)}.`,
     };
