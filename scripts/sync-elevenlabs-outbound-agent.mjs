@@ -8,7 +8,7 @@ import path from "node:path";
 const DEFAULT_AGENT_ID = "agent_9201kr7jkn3xfz2sr11sngjnqxwh";
 const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
 const OPT_OUT_TOOL_NAME = "opt_out";
-const CONFIG_VERSION = "sam-outbound-2026-07-11-targeted-abuse-v1";
+const CONFIG_VERSION = "sam-outbound-2026-07-11-honest-ai-identity-v1";
 const FUNCTIONS_BASE = process.env.SUPABASE_FUNCTIONS_BASE || "https://prjzhyzgfphiajhguzzu.supabase.co/functions/v1";
 const APPLY = process.argv.includes("--apply");
 const requestedModel = process.argv.find((arg) => arg.startsWith("--model="))?.split("=")[1];
