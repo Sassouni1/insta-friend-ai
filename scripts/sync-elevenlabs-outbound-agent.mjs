@@ -7,7 +7,7 @@ import path from "node:path";
 
 const DEFAULT_AGENT_ID = "agent_9201kr7jkn3xfz2sr11sngjnqxwh";
 const TOOL_NAME = "ghl_calendar_tool";
-const CONFIG_VERSION = "sam-outbound-2026-07-10-rollback-v1";
+const CONFIG_VERSION = "sam-outbound-2026-07-10-number-confirm-v2";
 const APPLY = process.argv.includes("--apply");
 const requestedModel = process.argv.find((arg) => arg.startsWith("--model="))?.split("=")[1];
 const apiKey = process.env.ELEVENLABS_API_KEY_CUSTOM || process.env.ELEVENLABS_API_KEY;
@@ -58,7 +58,7 @@ async function elevenLabs(pathname, options = {}) {
   return data;
 }
 
-const prompt = extractTemplateLiteral(bridgeSource, "const SAM_OUTBOUND_PROMPT = `");
+const prompt = extractTemplateLiteral(bridgeSource, "const SAM_OUTBOUND_PROMPT =\n  `");
 const [agent, toolList] = await Promise.all([
   elevenLabs(`/v1/convai/agents/${agentId}`),
   elevenLabs("/v1/convai/tools"),

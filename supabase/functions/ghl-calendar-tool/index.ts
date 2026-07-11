@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { z } from "https://esm.sh/zod@3.23.8";
 import { corsHeaders, jsonResponse } from "../_shared/cors.ts";
-import { GhlClient, flattenSlots, getFreshGhlToken } from "../_shared/ghl.ts";
+import { flattenSlots, getFreshGhlToken, GhlClient } from "../_shared/ghl.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -28,14 +28,23 @@ const BookSchema = z.object({
   elevenlabs_conversation_id: z.string().optional(),
   caller_name: z.string().min(1).default("Chris"),
   caller_phone: z.string().min(8),
-  confirmed_phone: z.preprocess((value) => value === "" ? undefined : value, z.string().min(8).optional()),
+  confirmed_phone: z.preprocess(
+    (value) => value === "" ? undefined : value,
+    z.string().min(8).optional(),
+  ),
   phone_confirmed: z.boolean().optional().default(false),
-  caller_email: z.preprocess((value) => value === "" ? undefined : value, z.string().email().optional()),
+  caller_email: z.preprocess(
+    (value) => value === "" ? undefined : value,
+    z.string().email().optional(),
+  ),
   email_confirmed: z.boolean().optional().default(false),
   slot_iso: z.string().datetime({ offset: true }),
 });
 
-const BodySchema = z.discriminatedUnion("action", [AvailabilitySchema, BookSchema]);
+const BodySchema = z.discriminatedUnion("action", [
+  AvailabilitySchema,
+  BookSchema,
+]);
 
 type AuditParams = {
   tenantId: string;
@@ -49,13 +58,17 @@ type TranscriptEntry = {
 };
 
 function normalizeTranscriptText(text: string): string {
-  return text.toLowerCase().replace(/[’]/g, "'").replace(/[^a-z0-9@.+' -]/g, " ").replace(/\s+/g, " ").trim();
+  return text.toLowerCase().replace(/[’]/g, "'").replace(
+    /[^a-z0-9@.+' -]/g,
+    " ",
+  ).replace(/\s+/g, " ").trim();
 }
 
 function isAffirmativeConfirmation(text: string): boolean {
   const normalized = normalizeTranscriptText(text);
   if (/\b(no|nope|not|wrong|incorrect)\b/.test(normalized)) return false;
-  return /^(yes|yeah|yep|correct|right|that's right|that is right|yes it is|it is|sure|mhm|mm hmm)\b/.test(normalized);
+  return /^(yes|yeah|yep|correct|right|that's right|that is right|yes it is|it is|sure|mhm|mm hmm)\b/
+    .test(normalized);
 }
 
 function isPhoneConfirmationPrompt(text: string): boolean {
@@ -68,8 +81,10 @@ function isPhoneConfirmationPrompt(text: string): boolean {
 
 function isEmailConfirmationPrompt(text: string): boolean {
   const normalized = normalizeTranscriptText(text);
-  const mentionsEmailReadback = normalized.includes("@") || normalized.includes(" email ") || normalized.includes(" at ");
-  const asksForConfirmation = /\b(confirm|right|correct|did i get|is that)\b/.test(normalized);
+  const mentionsEmailReadback = normalized.includes("@") ||
+    normalized.includes(" email ") || normalized.includes(" at ");
+  const asksForConfirmation = /\b(confirm|right|correct|did i get|is that)\b/
+    .test(normalized);
   return mentionsEmailReadback && asksForConfirmation;
 }
 
@@ -80,7 +95,11 @@ function hasAffirmativeReplyAfter(
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index];
     if (entry.role !== "agent" || !promptMatcher(entry.text)) continue;
-    for (let replyIndex = index + 1; replyIndex < entries.length; replyIndex++) {
+    for (
+      let replyIndex = index + 1;
+      replyIndex < entries.length;
+      replyIndex++
+    ) {
       const reply = entries[replyIndex];
       if (reply.role !== "user") continue;
       return isAffirmativeConfirmation(reply.text);
@@ -89,7 +108,10 @@ function hasAffirmativeReplyAfter(
   return false;
 }
 
-async function getContactConfirmationState(supabase: any, conversationId: string | null) {
+async function getContactConfirmationState(
+  supabase: any,
+  conversationId: string | null,
+) {
   if (!conversationId) return { phoneConfirmed: false, emailConfirmed: false };
   const { data, error } = await supabase
     .from("transcript_entries")
@@ -97,15 +119,26 @@ async function getContactConfirmationState(supabase: any, conversationId: string
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: false })
     .limit(80);
-  if (error) throw new Error(`confirmation transcript lookup failed: ${error.message}`);
+  if (error) {
+    throw new Error(`confirmation transcript lookup failed: ${error.message}`);
+  }
   const entries = ((data || []) as TranscriptEntry[]).reverse();
   return {
-    phoneConfirmed: hasAffirmativeReplyAfter(entries, isPhoneConfirmationPrompt),
-    emailConfirmed: hasAffirmativeReplyAfter(entries, isEmailConfirmationPrompt),
+    phoneConfirmed: hasAffirmativeReplyAfter(
+      entries,
+      isPhoneConfirmationPrompt,
+    ),
+    emailConfirmed: hasAffirmativeReplyAfter(
+      entries,
+      isEmailConfirmationPrompt,
+    ),
   };
 }
 
-async function resolveConversationId(supabase: any, params: AuditParams): Promise<string | null> {
+async function resolveConversationId(
+  supabase: any,
+  params: AuditParams,
+): Promise<string | null> {
   if (params.conversationId) return params.conversationId;
   if (!params.callerPhone) return null;
 
@@ -121,7 +154,11 @@ async function resolveConversationId(supabase: any, params: AuditParams): Promis
   return data?.id || null;
 }
 
-async function recordToolStart(supabase: any, conversationId: string | null, parameters: Record<string, unknown>) {
+async function recordToolStart(
+  supabase: any,
+  conversationId: string | null,
+  parameters: Record<string, unknown>,
+) {
   if (!conversationId) return;
   try {
     const { data: row } = await supabase
@@ -132,7 +169,8 @@ async function recordToolStart(supabase: any, conversationId: string | null, par
     await supabase
       .from("conversations")
       .update({
-        bridge_calendar_tool_call_count: Number(row?.bridge_calendar_tool_call_count || 0) + 1,
+        bridge_calendar_tool_call_count:
+          Number(row?.bridge_calendar_tool_call_count || 0) + 1,
         bridge_last_calendar_tool_name: CALENDAR_TOOL_NAME,
         bridge_last_calendar_tool_params: parameters,
         bridge_last_calendar_tool_result: null,
@@ -145,19 +183,30 @@ async function recordToolStart(supabase: any, conversationId: string | null, par
   }
 }
 
-async function recordToolResult(supabase: any, conversationId: string | null, result: Record<string, unknown>) {
+async function recordToolResult(
+  supabase: any,
+  conversationId: string | null,
+  result: Record<string, unknown>,
+) {
   if (!conversationId) return;
   try {
     await supabase
       .from("conversations")
-      .update({ bridge_last_calendar_tool_result: result, bridge_last_calendar_tool_error: null })
+      .update({
+        bridge_last_calendar_tool_result: result,
+        bridge_last_calendar_tool_error: null,
+      })
       .eq("id", conversationId);
   } catch (error) {
     console.error("[ghl-calendar-tool] audit result failed", error);
   }
 }
 
-async function recordToolError(supabase: any, conversationId: string | null, errorMessage: string) {
+async function recordToolError(
+  supabase: any,
+  conversationId: string | null,
+  errorMessage: string,
+) {
   if (!conversationId) return;
   try {
     const { data: row } = await supabase
@@ -168,7 +217,8 @@ async function recordToolError(supabase: any, conversationId: string | null, err
     await supabase
       .from("conversations")
       .update({
-        bridge_calendar_tool_error_count: Number(row?.bridge_calendar_tool_error_count || 0) + 1,
+        bridge_calendar_tool_error_count:
+          Number(row?.bridge_calendar_tool_error_count || 0) + 1,
         bridge_last_calendar_tool_error: errorMessage.slice(0, 1000),
       })
       .eq("id", conversationId);
@@ -217,16 +267,29 @@ function slotParts(slotIso: string, timezone: string) {
 }
 
 function normalizePreference(input?: string): string {
-  return (input || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  return (input || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(
+    /\s+/g,
+    " ",
+  ).trim();
 }
 
-function filterSlots(slots: string[], timezone: string, preference?: string): string[] {
+function filterSlots(
+  slots: string[],
+  timezone: string,
+  preference?: string,
+): string[] {
   const pref = normalizePreference(preference);
   if (!pref) return slots;
 
-  const dayMatch = pref.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/);
-  const afterMatch = pref.match(/\b(after|later than)\s+(\d{1,2})(?::\d{2})?\s*(am|pm|a m|p m)?\b/);
-  const beforeMatch = pref.match(/\b(before|earlier than)\s+(\d{1,2})(?::\d{2})?\s*(am|pm|a m|p m)?\b/);
+  const dayMatch = pref.match(
+    /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/,
+  );
+  const afterMatch = pref.match(
+    /\b(after|later than)\s+(\d{1,2})(?::\d{2})?\s*(am|pm|a m|p m)?\b/,
+  );
+  const beforeMatch = pref.match(
+    /\b(before|earlier than)\s+(\d{1,2})(?::\d{2})?\s*(am|pm|a m|p m)?\b/,
+  );
   const toHour24 = (hourText: string, marker?: string) => {
     let hour = Number(hourText);
     const m = (marker || "").replace(/\s/g, "");
@@ -240,7 +303,11 @@ function filterSlots(slots: string[], timezone: string, preference?: string): st
   if (/\b(next week|following week)\b/.test(pref)) {
     const now = new Date();
     const daysUntilNextMonday = ((8 - now.getDay()) % 7) || 7;
-    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysUntilNextMonday).getTime();
+    const start = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() + daysUntilNextMonday,
+    ).getTime();
     const end = start + 7 * 24 * 60 * 60 * 1000;
     scopedSlots = slots.filter((slot) => {
       const t = new Date(slot).getTime();
@@ -251,21 +318,33 @@ function filterSlots(slots: string[], timezone: string, preference?: string): st
   return scopedSlots.filter((slot) => {
     const { hour24, weekday } = slotParts(slot, timezone);
     if (dayMatch && weekday.toLowerCase() !== dayMatch[1]) return false;
-    if (afterMatch && hour24 <= toHour24(afterMatch[2], afterMatch[3])) return false;
-    if (beforeMatch && hour24 >= toHour24(beforeMatch[2], beforeMatch[3])) return false;
+    if (afterMatch && hour24 <= toHour24(afterMatch[2], afterMatch[3])) {
+      return false;
+    }
+    if (beforeMatch && hour24 >= toHour24(beforeMatch[2], beforeMatch[3])) {
+      return false;
+    }
     if (/\b(mornings?|am|a m|early)\b/.test(pref)) return hour24 < 12;
-    if (/\b(afternoons?|pm|p m|later)\b/.test(pref)) return hour24 >= 12 && hour24 < 17;
+    if (/\b(afternoons?|pm|p m|later)\b/.test(pref)) {
+      return hour24 >= 12 && hour24 < 17;
+    }
     if (/\b(evening|after work|night)\b/.test(pref)) return hour24 >= 17;
     return true;
   });
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
-  if (req.method !== "POST") return jsonResponse({ error: "method not allowed" }, 405);
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+  if (req.method !== "POST") {
+    return jsonResponse({ error: "method not allowed" }, 405);
+  }
 
   const parsed = BodySchema.safeParse(await req.json().catch(() => ({})));
-  if (!parsed.success) return jsonResponse({ error: parsed.error.flatten().fieldErrors }, 400);
+  if (!parsed.success) {
+    return jsonResponse({ error: parsed.error.flatten().fieldErrors }, 400);
+  }
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const tenantId = parsed.data.tenant_id || TENANT_ID;
@@ -274,7 +353,11 @@ serve(async (req) => {
     conversationId: parsed.data.conversation_id,
     callerPhone: parsed.data.caller_phone,
   });
-  await recordToolStart(supabase, auditConversationId, parsed.data as Record<string, unknown>);
+  await recordToolStart(
+    supabase,
+    auditConversationId,
+    parsed.data as Record<string, unknown>,
+  );
   const { data: tenant, error } = await supabase
     .from("tenants")
     .select("ghl_calendar_id, timezone")
@@ -282,7 +365,11 @@ serve(async (req) => {
     .maybeSingle();
 
   if (error || !tenant?.ghl_calendar_id) {
-    await recordToolError(supabase, auditConversationId, "tenant ghl config incomplete");
+    await recordToolError(
+      supabase,
+      auditConversationId,
+      "tenant ghl config incomplete",
+    );
     return jsonResponse({ error: "tenant ghl config incomplete" }, 400);
   }
 
@@ -294,7 +381,12 @@ serve(async (req) => {
       const startMs = Date.now();
       const endMs = startMs + parsed.data.days_ahead * 24 * 60 * 60 * 1000;
       const timezone = parsed.data.timezone || tenant.timezone;
-      const raw = await client.getCalendarSlots(tenant.ghl_calendar_id, startMs, endMs, timezone);
+      const raw = await client.getCalendarSlots(
+        tenant.ghl_calendar_id,
+        startMs,
+        endMs,
+        timezone,
+      );
       const all = flattenSlots(raw);
       const filtered = filterSlots(all, timezone, parsed.data.preference);
       const options = filtered.slice(0, 4).map((slotIso, index) => {
@@ -313,7 +405,8 @@ serve(async (req) => {
       const result = {
         ok: true,
         booking_confirmed: false,
-        elevenlabs_conversation_id: parsed.data.elevenlabs_conversation_id || null,
+        elevenlabs_conversation_id: parsed.data.elevenlabs_conversation_id ||
+          null,
         timezone,
         total_available: all.length,
         total_matching_preference: filtered.length,
@@ -327,14 +420,18 @@ serve(async (req) => {
       return jsonResponse(result);
     }
 
-    const confirmationState = await getContactConfirmationState(supabase, auditConversationId);
+    const confirmationState = await getContactConfirmationState(
+      supabase,
+      auditConversationId,
+    );
     if (!parsed.data.phone_confirmed || !confirmationState.phoneConfirmed) {
       const result = {
         ok: false,
         booking_confirmed: false,
         needs_phone_confirmation: true,
         error: "caller phone must be explicitly confirmed before booking",
-        instruction: "Ask: And is this the right number to put on file? Wait for a clear yes. If no, collect the correct number, repeat it, and wait for a clear yes before retrying book.",
+        instruction:
+          "Ask exactly: Is this also the best number to contact you at? Wait for a clear yes. If no, collect the correct number, repeat it, and wait for a clear yes before retrying book.",
       };
       await recordToolError(supabase, auditConversationId, result.error);
       return jsonResponse(result, 409);
@@ -346,22 +443,11 @@ serve(async (req) => {
         booking_confirmed: false,
         needs_email: true,
         error: "caller_email required before booking",
-        instruction: "Ask: Real quick, what's the best email to put on file? Then call this tool again with the same slot_iso and caller_email.",
+        instruction:
+          "Ask: Real quick, what's the best email to put on file? Then call this tool again with the same slot_iso and caller_email.",
       };
       await recordToolError(supabase, auditConversationId, result.error);
       return jsonResponse(result, 400);
-    }
-
-    if (!parsed.data.email_confirmed || !confirmationState.emailConfirmed) {
-      const result = {
-        ok: false,
-        booking_confirmed: false,
-        needs_email_confirmation: true,
-        error: "caller email must be explicitly confirmed before booking",
-        instruction: "Read the email back clearly, ask if it is exactly right, and WAIT for a clear yes before retrying book.",
-      };
-      await recordToolError(supabase, auditConversationId, result.error);
-      return jsonResponse(result, 409);
     }
 
     const phoneOnFile = parsed.data.confirmed_phone || parsed.data.caller_phone;
@@ -395,8 +481,11 @@ serve(async (req) => {
       appointment_id: appt.id,
       contact_id: contact.id,
       phone_on_file: phoneOnFile,
-      elevenlabs_conversation_id: parsed.data.elevenlabs_conversation_id || null,
-      confirmation: `Booked ${parsed.data.caller_name} for ${formatSlotForSpeech(parsed.data.slot_iso, tenant.timezone)}.`,
+      elevenlabs_conversation_id: parsed.data.elevenlabs_conversation_id ||
+        null,
+      confirmation: `Booked ${parsed.data.caller_name} for ${
+        formatSlotForSpeech(parsed.data.slot_iso, tenant.timezone)
+      }.`,
     };
     await recordToolResult(supabase, auditConversationId, result);
     return jsonResponse(result);
@@ -404,6 +493,10 @@ serve(async (req) => {
     console.error("[ghl-calendar-tool]", err);
     const errorMessage = err.message || "failed";
     await recordToolError(supabase, auditConversationId, errorMessage);
-    return jsonResponse({ ok: false, booking_confirmed: false, error: errorMessage }, 500);
+    return jsonResponse({
+      ok: false,
+      booking_confirmed: false,
+      error: errorMessage,
+    }, 500);
   }
 });
