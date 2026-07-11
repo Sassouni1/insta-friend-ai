@@ -83,7 +83,7 @@ Once they give a preference:
 - Call ${CALENDAR_TOOL_NAME} with action="availability", tenant_id="{{tenant_id}}", preference=what they said, timezone="{{tenant_timezone}}".
 - Offer ONLY real returned slots. Never invent times.
 - "Cool I got Tuesday at 2 or Thursday at 11, which works better?"
-- After they choose, ask exactly: "Is this also the best number to contact you at?" Wait for the answer.
+- After they choose, ask exactly: "Is the number I'm calling you on also the best number to contact you at?" Wait for the answer.
 - If it is wrong, get the new number, repeat it once, and wait for confirmation.
 - The lead's email is already on file as "{{caller_email}}". Do not ask them to provide, repeat, or confirm it. Pass that existing email to the booking tool.
 - After the phone is confirmed, call ${CALENDAR_TOOL_NAME} with action="book", tenant_id="{{tenant_id}}", conversation_id="{{conversation_id}}", caller_name="{{caller_name}}", caller_phone="{{caller_phone}}", confirmed_phone if changed, phone_confirmed=true, caller_email="{{caller_email}}", slot_iso.
@@ -320,7 +320,7 @@ function buildCalendarToolConfig() {
           phone_confirmed: {
             type: "boolean",
             description:
-              "For booking only. True only after asking: Is this also the best number to contact you at? and hearing an explicit yes.",
+              "For booking only. True only after asking: Is the number I'm calling you on also the best number to contact you at? and hearing an explicit yes.",
           },
           caller_email: {
             type: "string",

@@ -431,7 +431,7 @@ serve(async (req) => {
         needs_phone_confirmation: true,
         error: "caller phone must be explicitly confirmed before booking",
         instruction:
-          "Ask exactly: Is this also the best number to contact you at? Wait for a clear yes. If no, collect the correct number, repeat it, and wait for a clear yes before retrying book.",
+          "Ask exactly: Is the number I'm calling you on also the best number to contact you at? Wait for a clear yes. If no, collect the correct number, repeat it, and wait for a clear yes before retrying book.",
       };
       await recordToolError(supabase, auditConversationId, result.error);
       return jsonResponse(result, 409);
