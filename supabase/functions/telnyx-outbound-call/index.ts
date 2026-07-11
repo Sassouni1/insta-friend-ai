@@ -2,14 +2,17 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { z } from "https://esm.sh/zod@3.23.8";
 import { corsHeaders, jsonResponse } from "../_shared/cors.ts";
-import { telnyxDial } from "../_shared/telnyx.ts";
+import {
+  ELEVENLABS_OUTBOUND_AGENT_ID,
+  ELEVENLABS_SIP_FROM_NUMBER,
+  ELEVENLABS_SIP_PHONE_NUMBER_ID,
+  elevenLabsSipDial,
+} from "../_shared/elevenlabs-sip.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-const BRIDGE_WS_URL = Deno.env.get("TELNYX_BRIDGE_WS_URL")?.trim() ||
-  `wss://${new URL(SUPABASE_URL).host.replace(".supabase.co", ".functions.supabase.co")}/telnyx-bridge`;
 const CHRIS_TEST_NUMBER = "+17276374672";
 
 const BodySchema = z.object({
@@ -24,8 +27,12 @@ const BodySchema = z.object({
 
 serve(async (req) => {
   try {
-    if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
-    if (req.method !== "POST") return jsonResponse({ error: "method not allowed" }, 405);
+    if (req.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
+    }
+    if (req.method !== "POST") {
+      return jsonResponse({ error: "method not allowed" }, 405);
+    }
 
     // Admin auth
     const authHeader = req.headers.get("Authorization");
@@ -36,7 +43,9 @@ serve(async (req) => {
       global: { headers: { Authorization: authHeader } },
     });
     const token = authHeader.replace("Bearer ", "");
-    const { data: userData, error: userErr } = await userClient.auth.getUser(token);
+    const { data: userData, error: userErr } = await userClient.auth.getUser(
+      token,
+    );
     const userId = userData?.user?.id;
     if (userErr || !userId) {
       return jsonResponse({ error: "unauthorized" }, 401);
@@ -55,7 +64,8 @@ serve(async (req) => {
       return jsonResponse({ error: parsed.error.flatten().fieldErrors }, 400);
     }
     const { tenant_id, to_number, caller_name, caller_email } = parsed.data;
-    const isChrisTestCall = parsed.data.test_call === true && to_number === CHRIS_TEST_NUMBER;
+    const isChrisTestCall = parsed.data.test_call === true &&
+      to_number === CHRIS_TEST_NUMBER;
 
     const { data: tenantRow } = await admin
       .from("tenants")
@@ -64,27 +74,36 @@ serve(async (req) => {
       .maybeSingle();
 
     if (!tenantRow?.active && !isChrisTestCall) {
-      return jsonResponse({ error: "tenant inactive; only Chris test calls are allowed while paused" }, 403);
+      return jsonResponse({
+        error:
+          "tenant inactive; only Chris test calls are allowed while paused",
+      }, 403);
     }
 
-    let fromNumber = parsed.data.from_number || "";
-    let connectionId = parsed.data.connection_id || "";
-    if (!fromNumber || !connectionId) {
-      const { data: phoneRow } = await admin
-        .from("phone_numbers")
-        .select("e164_number, telnyx_connection_id, active")
-        .eq("tenant_id", tenant_id)
-        .order("active", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (!phoneRow?.e164_number || !phoneRow?.telnyx_connection_id) {
-        return jsonResponse({ error: "no phone number configured for tenant" }, 400);
-      }
-      if (!phoneRow.active && !isChrisTestCall) {
-        return jsonResponse({ error: "phone number inactive; only Chris test calls are allowed while paused" }, 403);
-      }
-      fromNumber = fromNumber || phoneRow.e164_number;
-      connectionId = connectionId || phoneRow.telnyx_connection_id;
+    const fromNumber = parsed.data.from_number || ELEVENLABS_SIP_FROM_NUMBER;
+    if (fromNumber !== ELEVENLABS_SIP_FROM_NUMBER) {
+      return jsonResponse({
+        error:
+          `caller ID ${fromNumber} is not connected to the direct ElevenLabs SIP trunk`,
+      }, 400);
+    }
+    const { data: phoneRow } = await admin
+      .from("phone_numbers")
+      .select("e164_number, active")
+      .eq("tenant_id", tenant_id)
+      .eq("e164_number", fromNumber)
+      .limit(1)
+      .maybeSingle();
+    if (!phoneRow?.e164_number) {
+      return jsonResponse({
+        error: "no ElevenLabs SIP caller ID configured for tenant",
+      }, 400);
+    }
+    if (!phoneRow.active && !isChrisTestCall) {
+      return jsonResponse({
+        error:
+          "phone number inactive; only Chris test calls are allowed while paused",
+      }, 403);
     }
 
     // Pre-create conversation row so we have an id for the stream URL
@@ -99,56 +118,45 @@ serve(async (req) => {
       .single();
 
     if (convErr || !convRow) {
-      return jsonResponse({ error: "failed to create conversation", details: convErr?.message }, 500);
+      return jsonResponse({
+        error: "failed to create conversation",
+        details: convErr?.message,
+      }, 500);
     }
 
-    const params = new URLSearchParams({
-      conv: convRow.id,
-      tenant: tenant_id,
-      caller: to_number,
-      direction: "outbound",
-    });
-    if (caller_name) params.set("name", caller_name);
-    if (caller_email) params.set("email", caller_email);
-    if (tenantRow?.name) params.set("company", tenantRow.name);
-    if (tenantRow?.timezone) params.set("tz", tenantRow.timezone);
-
-    const streamUrl = `${BRIDGE_WS_URL}?${params.toString()}`;
-
-    const dialRes = await telnyxDial({
-      to: to_number,
-      from: fromNumber,
-      connection_id: connectionId,
-      stream_url: streamUrl,
-      stream_track: "inbound_track",
-      stream_codec: "PCMU",
-      stream_bidirectional_mode: "rtp",
-      stream_bidirectional_codec: "PCMU",
+    const dialData = await elevenLabsSipDial({
+      toNumber: to_number,
+      tenantId: tenant_id,
+      conversationId: convRow.id,
+      leadName: caller_name,
+      leadEmail: caller_email,
+      companyName: tenantRow?.name,
+      tenantTimezone: tenantRow?.timezone,
     });
 
-    if (!dialRes.ok) {
-      const txt = await dialRes.text();
-      console.error(`[telnyx-outbound] dial failed [${dialRes.status}]: ${txt}`);
-      return jsonResponse({ error: `dial failed: ${txt}` }, 502);
-    }
+    await admin
+      .from("conversations")
+      .update({
+        elevenlabs_agent_id: ELEVENLABS_OUTBOUND_AGENT_ID,
+        elevenlabs_conversation_id: dialData.conversation_id,
+        telnyx_call_status: "elevenlabs_sip_dial_accepted",
+        telnyx_event_payload: {
+          provider: "elevenlabs_sip",
+          sip_phone_number_id: ELEVENLABS_SIP_PHONE_NUMBER_ID,
+          sip_call_id: dialData.sip_call_id,
+          from_number: fromNumber,
+        },
+      })
+      .eq("id", convRow.id);
 
-    const dialData = await dialRes.json();
-    const dialPayload = dialData?.data ?? {};
-    const callControlId = dialPayload?.call_control_id ?? null;
-    if (callControlId) {
-      await admin
-        .from("conversations")
-        .update({
-          telnyx_call_control_id: callControlId,
-          telnyx_call_session_id: dialPayload?.call_session_id ?? null,
-          telnyx_call_leg_id: dialPayload?.call_leg_id ?? null,
-          telnyx_call_status: "dial_request_accepted",
-          telnyx_event_payload: dialPayload,
-        })
-        .eq("id", convRow.id);
-    }
-
-    return jsonResponse({ ok: true, conversation_id: convRow.id, call_control_id: callControlId });
+    return jsonResponse({
+      ok: true,
+      provider: "elevenlabs_sip",
+      conversation_id: convRow.id,
+      elevenlabs_conversation_id: dialData.conversation_id,
+      sip_call_id: dialData.sip_call_id,
+      call_control_id: null,
+    });
   } catch (err: any) {
     console.error("[telnyx-outbound] unhandled", err);
     return jsonResponse({ error: err?.message || String(err) }, 500);

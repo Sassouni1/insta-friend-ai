@@ -80,7 +80,7 @@ export default function DialPage() {
           });
           if (error) collected.push({ lead, ok: false, message: error.message });
           else if (data?.error) collected.push({ lead, ok: false, message: typeof data.error === "string" ? data.error : JSON.stringify(data.error) });
-          else collected.push({ lead, ok: true, message: `Call started: ${data?.call_control_id || "ok"}` });
+          else collected.push({ lead, ok: true, message: `Call started: ${data?.elevenlabs_conversation_id || data?.sip_call_id || "ok"}` });
         } catch (e: any) {
           collected.push({ lead, ok: false, message: e.message });
         }

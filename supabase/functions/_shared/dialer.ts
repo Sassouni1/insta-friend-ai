@@ -1,6 +1,11 @@
 // Shared outbound dialer used by lead opt-in + GHL contact webhooks.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { telnyxDial } from "./telnyx.ts";
+import {
+  ELEVENLABS_OUTBOUND_AGENT_ID,
+  ELEVENLABS_SIP_FROM_NUMBER,
+  ELEVENLABS_SIP_PHONE_NUMBER_ID,
+  elevenLabsSipDial,
+} from "./elevenlabs-sip.ts";
 
 // Loose alias — Deno's strict typing on createClient<unknown> infers `never` for
 // schema, which breaks .from() chaining across modules. We treat the client as
@@ -9,17 +14,13 @@ type SupabaseAny = any;
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const BRIDGE_WS_URL = `wss://${new URL(SUPABASE_URL).host.replace(".supabase.co", ".functions.supabase.co")}/telnyx-bridge`;
-
-const RETRY_WAIT_MS = 75_000;
-
 export async function placeDial(opts: {
   supabase: SupabaseAny;
   tenantId: string;
   leadPhone: string;
   leadName: string | null;
   leadEmail: string | null;
-}): Promise<{ conversationId: string; callControlId: string | null }> {
+}): Promise<{ conversationId: string; elevenLabsConversationId: string }> {
   const { supabase, tenantId, leadPhone, leadName, leadEmail } = opts as {
     supabase: SupabaseAny;
     tenantId: string;
@@ -31,9 +32,10 @@ export async function placeDial(opts: {
   const [{ data: phoneRow }, { data: tenantRow }] = await Promise.all([
     supabase
       .from("phone_numbers")
-      .select("e164_number, telnyx_connection_id")
+      .select("e164_number")
       .eq("tenant_id", tenantId)
       .eq("active", true)
+      .eq("e164_number", ELEVENLABS_SIP_FROM_NUMBER)
       .limit(1)
       .maybeSingle(),
     supabase
@@ -43,8 +45,8 @@ export async function placeDial(opts: {
       .maybeSingle(),
   ]);
 
-  if (!phoneRow?.e164_number || !phoneRow?.telnyx_connection_id) {
-    throw new Error("no active phone number for tenant");
+  if (!phoneRow?.e164_number) {
+    throw new Error("no active ElevenLabs SIP phone number for tenant");
   }
 
   const { data: convRow, error: convErr } = await supabase
@@ -57,179 +59,39 @@ export async function placeDial(opts: {
     .select("id")
     .single();
 
-  if (convErr || !convRow) throw new Error(`conversation insert failed: ${convErr?.message}`);
-
-  const params = new URLSearchParams({
-    conv: convRow.id,
-    tenant: tenantId,
-    caller: leadPhone,
-    direction: "outbound",
-  });
-  if (leadName) params.set("name", leadName);
-  if (leadEmail) params.set("email", leadEmail);
-  if (tenantRow?.name) params.set("company", tenantRow.name);
-  if (tenantRow?.timezone) params.set("tz", tenantRow.timezone);
-
-  const streamUrl = `${BRIDGE_WS_URL}?${params.toString()}`;
-
-  const dialRes = await telnyxDial({
-    to: leadPhone,
-    from: phoneRow.e164_number,
-    connection_id: phoneRow.telnyx_connection_id,
-    stream_url: streamUrl,
-    stream_track: "inbound_track",
-    stream_codec: "PCMU",
-    stream_bidirectional_mode: "rtp",
-    stream_bidirectional_codec: "PCMU",
-  });
-
-  if (!dialRes.ok) {
-    const txt = await dialRes.text();
-    throw new Error(`telnyx dial ${dialRes.status}: ${txt.slice(0, 200)}`);
+  if (convErr || !convRow) {
+    throw new Error(`conversation insert failed: ${convErr?.message}`);
   }
 
-  const dialData = await dialRes.json();
-  const dialPayload = dialData?.data ?? {};
-  const callControlId = dialPayload?.call_control_id ?? null;
-  if (callControlId) {
-    await supabase
-      .from("conversations")
-      .update({
-        telnyx_call_control_id: callControlId,
-        telnyx_call_session_id: dialPayload?.call_session_id ?? null,
-        telnyx_call_leg_id: dialPayload?.call_leg_id ?? null,
-        telnyx_call_status: "dial_request_accepted",
-        telnyx_event_payload: dialPayload,
-      })
-      .eq("id", convRow.id);
-  }
-  return { conversationId: convRow.id, callControlId };
-}
-
-// Voicemail / carrier-intercept phrases that must NOT count as a human answer.
-const NON_HUMAN_PATTERNS = [
-  /at the tone/i,
-  /please record/i,
-  /leave (a )?message/i,
-  /not available/i,
-  /voice ?mail/i,
-  /please try (your call )?again/i,
-  /couldn'?t hear you/i,
-  /the (person|number) you (are|have) (trying to reach|called)/i,
-  /has been forwarded/i,
-  /mailbox/i,
-  /google (subscriber|voice)/i,
-];
-
-async function wasAnswered(supabase: SupabaseAny, conversationId: string): Promise<boolean> {
-  const { data: callRow, error: callErr } = await supabase
-    .from("conversations")
-    .select("telnyx_answered_at, telnyx_hangup_cause, telnyx_sip_code, telnyx_call_status, media_frame_count, inbound_speech_frame_count, first_inbound_speech_at")
-    .eq("id", conversationId)
-    .maybeSingle();
-
-  if (callErr) {
-    console.error("[dial] call outcome query error:", callErr.message);
-    return false;
-  }
-
-  if (!callRow?.telnyx_answered_at) {
-    console.log(`[dial] not answered: no Telnyx call.answered webhook for ${conversationId}`);
-    return false;
-  }
-
-  const hangupCause = String(callRow.telnyx_hangup_cause || "").toLowerCase();
-  if (/no_answer|busy|failed|rejected|timeout|cancel|unallocated|unreachable/.test(hangupCause)) {
-    console.log(`[dial] not answered: Telnyx hangup cause=${hangupCause || "unknown"} sip=${callRow.telnyx_sip_code ?? "-"}`);
-    return false;
-  }
-
-  const speechFrames = Number(callRow.inbound_speech_frame_count || 0);
-  if (speechFrames < 25 || !callRow.first_inbound_speech_at) {
-    console.log(`[dial] not human answered: answered webhook exists, but only ${speechFrames} confident inbound speech frames`);
-    return false;
-  }
-
-  // Only inbound caller speech counts — never agent audio, never empty placeholders,
-  // never carrier/voicemail intercepts. This is what triggers (or suppresses) the retry.
-  const { data, error } = await supabase
-    .from("transcript_entries")
-    .select("role, text")
-    .eq("conversation_id", conversationId)
-    .eq("role", "user");
-
-  if (error) {
-    console.error("[dial] wasAnswered query error:", error.message);
-    return false;
-  }
-
-  const rows = (data ?? []) as Array<{ role: string; text: string | null }>;
-  for (const row of rows) {
-    const txt = (row.text ?? "").trim();
-    if (!txt) continue;
-    if (txt === "..." || txt === "…") continue;
-    if (NON_HUMAN_PATTERNS.some((re) => re.test(txt))) {
-      console.log(`[dial] non-human transcript ignored: "${txt.slice(0, 80)}"`);
-      continue;
-    }
-    if (/^(yes|yeah|yep|no|name|hello|hi|okay|ok)$/i.test(txt.replace(/[.?!]/g, "").trim())) {
-      console.log(`[dial] weak/generic transcript ignored: "${txt.slice(0, 80)}"`);
-      continue;
-    }
-    // Require at least 2 chars of real speech so single noise tokens don't count.
-    if (txt.replace(/[^a-z0-9]/gi, "").length >= 8) return true;
-  }
-  console.log(`[dial] not human answered: no reliable human transcript for ${conversationId}`);
-  return false;
-}
-
-async function maybeRetryCall(
-  supabase: SupabaseAny,
-  scheduledId: string,
-  claimed: { tenant_id: string; lead_phone: string; lead_name: string | null; lead_email: string | null },
-  firstConversationId: string,
-  logTag: string,
-) {
-  await new Promise((r) => setTimeout(r, RETRY_WAIT_MS));
-
-  const { data: current } = await supabase
-    .from("scheduled_calls")
-    .select("status, attempts, conversation_id")
-    .eq("id", scheduledId)
-    .maybeSingle();
-
-  if (!current || current.status !== "dialed" || current.conversation_id !== firstConversationId || Number(current.attempts || 0) >= 2) {
-    console.log(`[${logTag}] retry skipped for ${scheduledId}; row changed`);
-    return;
-  }
-
-  if (await wasAnswered(supabase, firstConversationId)) {
-    console.log(`[${logTag}] ${claimed.lead_phone} answered on attempt 1`);
-    return;
-  }
-
-  console.log(`[${logTag}] ${claimed.lead_phone} no human speech detected on attempt 1; retrying`);
-
-  const second = await placeDial({
-    supabase,
-    tenantId: claimed.tenant_id,
-    leadPhone: claimed.lead_phone,
-    leadName: claimed.lead_name,
-    leadEmail: claimed.lead_email,
+  const dialData = await elevenLabsSipDial({
+    toNumber: leadPhone,
+    tenantId,
+    conversationId: convRow.id,
+    leadName,
+    leadEmail,
+    companyName: tenantRow?.name,
+    tenantTimezone: tenantRow?.timezone,
   });
 
   await supabase
-    .from("scheduled_calls")
+    .from("conversations")
     .update({
-      status: "dialed",
-      conversation_id: second.conversationId,
-      attempts: 2,
-      last_error: null,
+      elevenlabs_agent_id: ELEVENLABS_OUTBOUND_AGENT_ID,
+      elevenlabs_conversation_id: dialData.conversation_id,
+      telnyx_call_status: "elevenlabs_sip_dial_accepted",
+      telnyx_event_payload: {
+        provider: "elevenlabs_sip",
+        sip_phone_number_id: ELEVENLABS_SIP_PHONE_NUMBER_ID,
+        sip_call_id: dialData.sip_call_id,
+        from_number: phoneRow.e164_number,
+      },
     })
-    .eq("id", scheduledId)
-    .eq("conversation_id", firstConversationId);
+    .eq("id", convRow.id);
 
-  console.log(`[${logTag}] dialed ${claimed.lead_phone} for ${scheduledId} (attempt 2)`);
+  return {
+    conversationId: convRow.id,
+    elevenLabsConversationId: dialData.conversation_id!,
+  };
 }
 
 export async function fireCall(scheduledId: string, logTag = "dial"): Promise<{
@@ -237,7 +99,10 @@ export async function fireCall(scheduledId: string, logTag = "dial"): Promise<{
   conversationId?: string;
   error?: string;
 }> {
-  const supabase: SupabaseAny = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  const supabase: SupabaseAny = createClient(
+    SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY,
+  );
 
   const { data: claimed } = await supabase
     .from("scheduled_calls")
@@ -248,7 +113,9 @@ export async function fireCall(scheduledId: string, logTag = "dial"): Promise<{
     .maybeSingle();
 
   if (!claimed) {
-    console.log(`[${logTag}] call ${scheduledId} already processed or cancelled`);
+    console.log(
+      `[${logTag}] call ${scheduledId} already processed or cancelled`,
+    );
     return { status: "skipped" };
   }
 
@@ -263,12 +130,20 @@ export async function fireCall(scheduledId: string, logTag = "dial"): Promise<{
 
     await supabase
       .from("scheduled_calls")
-      .update({ status: "dialed", conversation_id: first.conversationId, last_error: null })
+      .update({
+        status: "dialed",
+        conversation_id: first.conversationId,
+        last_error: null,
+      })
       .eq("id", scheduledId);
 
-    console.log(`[${logTag}] dialed ${claimed.lead_phone} for ${scheduledId} (attempt 1)`);
+    console.log(
+      `[${logTag}] dialed ${claimed.lead_phone} for ${scheduledId} (attempt 1)`,
+    );
 
-    scheduleBackground(() => maybeRetryCall(supabase, scheduledId, claimed, first.conversationId, logTag));
+    // Direct SIP no longer exposes the bridge-only speech counters that the old
+    // retry heuristic depended on. Never redial blindly; a future retry policy
+    // must be driven by verified ElevenLabs post-call outcomes.
     return { status: "dialed", conversationId: first.conversationId };
   } catch (err: any) {
     const msg = err?.message || String(err);

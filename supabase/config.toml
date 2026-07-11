@@ -15,6 +15,9 @@ verify_jwt = false
 [functions.ghl-calendar-tool]
 verify_jwt = false
 
+[functions.elevenlabs-post-call-webhook]
+verify_jwt = false
+
 [functions.crm-oauth-callback]
 verify_jwt = false
 

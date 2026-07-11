@@ -22,9 +22,9 @@ Legend
 
 | Name | Type | Required | Used by | Provenance | Notes |
 |---|---|---|---|---|---|
-| `SUPABASE_URL` | CONFIG | Required | admin-create-user, crm-contact-webhook, crm-oauth-callback, crm-oauth-start, elevenlabs-conversation-token, ghl-book-appointment, ghl-calendar-tool, ghl-get-availability, ghl-list-calendars, ghl-list-contacts-debug, ghl-test-contact-debug, lead-opt-in-webhook, practice-bot-call, scheduled-call-worker, telnyx-bridge, telnyx-bridge-omnivoice, telnyx-inbound, telnyx-outbound-call, telnyx-outbound-call-omnivoice, _shared/dialer.ts | supabase-auto | New project supplies this automatically. |
+| `SUPABASE_URL` | CONFIG | Required | admin-create-user, crm-contact-webhook, crm-oauth-callback, crm-oauth-start, elevenlabs-conversation-token, elevenlabs-post-call-webhook, ghl-book-appointment, ghl-calendar-tool, ghl-get-availability, ghl-list-calendars, ghl-list-contacts-debug, ghl-test-contact-debug, lead-opt-in-webhook, practice-bot-call, scheduled-call-worker, telnyx-bridge, telnyx-bridge-omnivoice, telnyx-inbound, telnyx-outbound-call, telnyx-outbound-call-omnivoice, _shared/dialer.ts | supabase-auto | New project supplies this automatically. |
 | `SUPABASE_ANON_KEY` | SECRET (public JWT) | Required | practice-bot-call, telnyx-outbound-call, telnyx-outbound-call-omnivoice | supabase-auto | Used for user-JWT verification via `auth.getUser(token)`. |
-| `SUPABASE_SERVICE_ROLE_KEY` | SECRET | Required | admin-create-user, crm-contact-webhook, crm-oauth-callback, crm-oauth-start, elevenlabs-conversation-token, ghl-book-appointment, ghl-calendar-tool, ghl-get-availability, ghl-list-calendars, ghl-list-contacts-debug, ghl-test-contact-debug, lead-opt-in-webhook, practice-bot-call, scheduled-call-worker, telnyx-bridge, telnyx-bridge-omnivoice, telnyx-inbound, telnyx-outbound-call, telnyx-outbound-call-omnivoice, _shared/dialer.ts | supabase-auto | Auto-populated in edge runtime; NOT available on Lovable Cloud outside functions. |
+| `SUPABASE_SERVICE_ROLE_KEY` | SECRET | Required | admin-create-user, crm-contact-webhook, crm-oauth-callback, crm-oauth-start, elevenlabs-conversation-token, elevenlabs-post-call-webhook, ghl-book-appointment, ghl-calendar-tool, ghl-get-availability, ghl-list-calendars, ghl-list-contacts-debug, ghl-test-contact-debug, lead-opt-in-webhook, practice-bot-call, scheduled-call-worker, telnyx-bridge, telnyx-bridge-omnivoice, telnyx-inbound, telnyx-outbound-call, telnyx-outbound-call-omnivoice, _shared/dialer.ts | supabase-auto | Auto-injected by Supabase. |
 | `SUPABASE_JWKS` | CONFIG | Optional | (not referenced in source — currently unused by app code) | supabase-auto | Present in Lovable secret list; delivered automatically. Safe to omit. |
 | `SUPABASE_PUBLISHABLE_KEY` / `SUPABASE_PUBLISHABLE_KEYS` / `SUPABASE_SECRET_KEYS` | CONFIG | Optional | (not referenced) | supabase-auto | Platform-managed; recreated automatically. |
 | `SUPABASE_DB_URL` | SECRET | Optional | (not referenced) | supabase-auto | Platform-managed. |
@@ -40,8 +40,12 @@ Legend
 
 | Name | Type | Required | Used by | Provenance | Missing behavior |
 |---|---|---|---|---|---|
-| `ELEVENLABS_API_KEY_CUSTOM` | SECRET | Required (primary) | telnyx-bridge (lines 114–115), telnyx-bridge-omnivoice (141–142), elevenlabs-conversation-token (multiple) | manual-provider | Preferred key. When present, used for all EL calls. |
+| `ELEVENLABS_API_KEY_CUSTOM` | SECRET | Required (primary) | direct SIP dialer, telnyx-outbound-call, scheduled/webhook dial paths, telnyx-bridge fallback, elevenlabs-conversation-token | manual-provider | Preferred key. Direct outbound calls fail when missing. |
 | `ELEVENLABS_API_KEY` | SECRET | Optional fallback | Same as above | manual-provider (Lovable connector-managed in current project — CANNOT be exported) | Fallback if `_CUSTOM` unset. In the new project, provision `ELEVENLABS_API_KEY_CUSTOM` manually since the connector-managed `ELEVENLABS_API_KEY` will not follow. |
+| `ELEVENLABS_POST_CALL_WEBHOOK_SECRET` | SECRET | Required | elevenlabs-post-call-webhook | ElevenLabs-generated HMAC secret | Invalid or missing signatures are rejected with HTTP 401. |
+| `ELEVENLABS_OUTBOUND_AGENT_ID` | CONFIG (id) | Optional | direct SIP dialer | ElevenLabs dashboard | Defaults to the pinned stable Sam agent. |
+| `ELEVENLABS_SIP_PHONE_NUMBER_ID` | CONFIG (id) | Optional | direct SIP dialer | ElevenLabs dashboard | Defaults to the imported Telnyx SIP phone number. |
+| `ELEVENLABS_SIP_FROM_NUMBER` | CONFIG (E.164) | Optional | direct SIP dialer | Telnyx/ElevenLabs | Only this caller ID is accepted by the production direct-SIP path. |
 | `ELEVENLABS_AGENT_ID` | CONFIG (id) | Optional | telnyx-bridge (410), telnyx-bridge-omnivoice (437), elevenlabs-conversation-token (426, 438, 457) | manual-provider (ElevenLabs dashboard) | Falls back to DB-configured agent id per tenant. When set, overrides. **NOT in current Lovable secret list** — apparently unset in production; behavior relies on DB. |
 | `PRACTICE_CHRIS_AGENT_ID` | CONFIG (id) | Optional | telnyx-bridge (384), telnyx-bridge-omnivoice (411) | manual-provider | Practice-mode Chris agent override. **NOT in current Lovable secret list**. |
 | `PRACTICE_CHRIS_VOICE_ID` | CONFIG (id) | Optional | telnyx-bridge (186), telnyx-bridge-omnivoice (213) | manual-provider | Falls back to hard-coded `DEFAULT_CHRIS_VOICE_ID`. **NOT in current Lovable secret list**. |
@@ -115,15 +119,18 @@ The identical admin-auth gate is present in the production `telnyx-outbound-call
 
 ### Function-level config (`supabase/config.toml`)
 
-`verify_jwt = false` for: `telnyx-inbound`, `telnyx-bridge`, `ghl-get-availability`, `ghl-book-appointment`, `ghl-calendar-tool`, `crm-oauth-callback`, `lead-opt-in-webhook`, `crm-contact-webhook`, `ghl-list-contacts-debug`, `admin-create-user`, `ghl-test-contact-debug`, `practice-bot-call`, `scheduled-call-worker`, `telnyx-bridge-omnivoice`*, `telnyx-outbound-call-omnivoice`*.
+`verify_jwt = false` for: `telnyx-inbound`, `telnyx-bridge`, `elevenlabs-post-call-webhook` (HMAC-authenticated), `ghl-get-availability`, `ghl-book-appointment`, `ghl-calendar-tool`, `crm-oauth-callback`, `lead-opt-in-webhook`, `crm-contact-webhook`, `ghl-list-contacts-debug`, `admin-create-user`, `ghl-test-contact-debug`, `practice-bot-call`, `scheduled-call-worker`, `telnyx-bridge-omnivoice`*, `telnyx-outbound-call-omnivoice`*.
 
 \* DEPRECATED SANDBOX entries — omit from new project unless Chris re-authorizes.
 
-### Live caller path (KEEP — production)
+### Live caller path (production as of 2026-07-10)
 
-- `telnyx-outbound-call` → dials via Telnyx, streams to `wss://<project>.functions.supabase.co/telnyx-bridge`.
-- `telnyx-bridge` → ElevenLabs Conversational AI over WebSocket, PCMU 8k.
-- `telnyx-inbound` → Telnyx webhook; verifies Ed25519 sig with `TELNYX_PUBLIC_KEY`.
+- `telnyx-outbound-call` and `_shared/dialer.ts` → ElevenLabs SIP outbound API.
+- ElevenLabs → `sip.telnyx.com` over TLS using the imported Telnyx credential trunk.
+- `ghl_calendar_tool` remains a real ElevenLabs server tool pointing to the Supabase `ghl-calendar-tool` function.
+- `elevenlabs-post-call-webhook` receives HMAC-verified transcripts and initiation failures and persists them to the conversation record.
+- Automatic blind redial is disabled; direct SIP does not use the bridge-only speech counters.
+- `telnyx-bridge` remains deployed only as an inactive rollback/fallback path. Render is not required.
 
 ### Sandbox path (DEPRECATED SANDBOX — DO NOT DEPLOY TO PRODUCTION)
 
@@ -154,7 +161,7 @@ These are stored in DB rows or provider dashboards, not in code — Chris/Codex 
 ## 5. Summary — action list for new Supabase project
 
 1. **Auto-provided (do nothing):** `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWKS`, `VITE_SUPABASE_*`.
-2. **Manually recreate as SECRETS:** `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY`, `ELEVENLABS_API_KEY_CUSTOM`, `GHL_CLIENT_ID`, `GHL_CLIENT_SECRET`.
+2. **Manually recreate as SECRETS:** `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY`, `ELEVENLABS_API_KEY_CUSTOM`, `ELEVENLABS_POST_CALL_WEBHOOK_SECRET`, `GHL_CLIENT_ID`, `GHL_CLIENT_SECRET`.
 3. **Generate fresh random:** `SCHEDULED_CALL_WORKER_SECRET` (then configure cron header).
 4. **Optional configs (only if used):** `ELEVENLABS_AGENT_ID`, `PRACTICE_CHRIS_AGENT_ID`, `PRACTICE_CHRIS_VOICE_ID`.
 5. **Do NOT recreate:** all `OMNIVOICE_*` secrets, `ELEVENLABS_AGENT_MUTATION_ENABLED`, and the sandbox functions themselves.

@@ -117,6 +117,7 @@ Requested list was 21 items but duplicates a nonexistent `scheduled-calls-worker
 | elevenlabs-conversation-token | true (default) | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ELEVENLABS_API_KEY_CUSTOM` (fallback `ELEVENLABS_API_KEY`), optional `ELEVENLABS_AGENT_ID` |
 | ghl-book-appointment | false | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `GHL_CLIENT_ID`, `GHL_CLIENT_SECRET` |
 | ghl-calendar-tool | false | same as above |
+| elevenlabs-post-call-webhook | false (HMAC-authenticated) | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ELEVENLABS_POST_CALL_WEBHOOK_SECRET` |
 | ghl-get-availability | false | same as above |
 | ghl-list-calendars | true (default) | same as above |
 | ghl-list-contacts-debug | false | same as above |
@@ -127,11 +128,11 @@ Requested list was 21 items but duplicates a nonexistent `scheduled-calls-worker
 | telnyx-bridge | false | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ELEVENLABS_API_KEY_CUSTOM`, optional `ELEVENLABS_AGENT_ID`, `PRACTICE_CHRIS_AGENT_ID`, `PRACTICE_CHRIS_VOICE_ID` |
 | telnyx-call-debug | true (default) | `TELNYX_API_KEY` |
 | telnyx-inbound | false | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `TELNYX_PUBLIC_KEY`, `TELNYX_API_KEY` |
-| telnyx-outbound-call | true (default) | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `TELNYX_API_KEY` |
+| telnyx-outbound-call | true (default) | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `ELEVENLABS_API_KEY_CUSTOM`, optional direct-SIP ID configs |
 | **telnyx-bridge-omnivoice** ⚠️ | false | **DEPRECATED SANDBOX — DO NOT DEPLOY.** Uses `OMNIVOICE_*` secrets. |
 | **telnyx-outbound-call-omnivoice** ⚠️ | false | **DEPRECATED SANDBOX — DO NOT DEPLOY.** |
 
-Production path: `telnyx-outbound-call → telnyx-bridge → ElevenLabs`. OmniVoice functions are kept in the archive for historical completeness only.
+Production path: `telnyx-outbound-call → ElevenLabs SIP → Telnyx`. `telnyx-bridge` is an inactive rollback path; Render is not required. OmniVoice functions are archive-only.
 
 ---
 
@@ -146,6 +147,7 @@ Full detail in `SECRET_AND_ENVIRONMENT_INVENTORY.md`. Short list:
 - `TELNYX_API_KEY`
 - `TELNYX_PUBLIC_KEY`
 - `ELEVENLABS_API_KEY_CUSTOM` *(the connector-managed `ELEVENLABS_API_KEY` will not follow — provision `_CUSTOM` explicitly)*
+- `ELEVENLABS_POST_CALL_WEBHOOK_SECRET` *(generated when the HMAC workspace webhook is created)*
 - `GHL_CLIENT_ID`
 - `GHL_CLIENT_SECRET`
 
