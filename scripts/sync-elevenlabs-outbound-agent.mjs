@@ -8,7 +8,7 @@ import path from "node:path";
 const DEFAULT_AGENT_ID = "agent_9201kr7jkn3xfz2sr11sngjnqxwh";
 const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
 const OPT_OUT_TOOL_NAME = "opt_out";
-const CONFIG_VERSION = "sam-outbound-2026-07-11-call-safeguards-v1";
+const CONFIG_VERSION = "sam-outbound-2026-07-11-silence-12-24-30-v1";
 const FUNCTIONS_BASE = process.env.SUPABASE_FUNCTIONS_BASE || "https://prjzhyzgfphiajhguzzu.supabase.co/functions/v1";
 const APPLY = process.argv.includes("--apply");
 const requestedModel = process.argv.find((arg) => arg.startsWith("--model="))?.split("=")[1];
@@ -176,7 +176,8 @@ if (requestedModel) conversationConfig.agent.prompt.llm = requestedModel;
 conversationConfig.turn = {
   ...(conversationConfig.turn || {}),
   mode: "turn",
-  turn_timeout: 4,
+  turn_timeout: 12,
+  silence_end_call_timeout: 30,
   turn_eagerness: "normal",
 };
 conversationConfig.asr = {
@@ -211,6 +212,8 @@ console.log(JSON.stringify({
   llm: conversationConfig.agent.prompt.llm,
   max_duration_seconds: conversationConfig.conversation.max_duration_seconds,
   built_in_tools: Object.keys(conversationConfig.agent.prompt.built_in_tools || {}),
+  silence_nudge_interval_seconds: conversationConfig.turn.turn_timeout,
+  silence_end_call_timeout_seconds: conversationConfig.turn.silence_end_call_timeout,
   prompt_characters: prompt.length,
 }, null, 2));
 
@@ -232,6 +235,12 @@ if (APPLY) {
   if (verified.conversation_config?.conversation?.max_duration_seconds !== 480) {
     throw new Error("ElevenLabs did not save the eight-minute duration cap");
   }
+  if (
+    verified.conversation_config?.turn?.turn_timeout !== 12 ||
+    verified.conversation_config?.turn?.silence_end_call_timeout !== 30
+  ) {
+    throw new Error("ElevenLabs did not save the 12/24/30 silence handling");
+  }
   if (!verifiedPrompt?.built_in_tools?.voicemail_detection) {
     throw new Error("ElevenLabs did not save voicemail detection");
   }
@@ -249,6 +258,8 @@ if (APPLY) {
     verified_prompt: true,
     verified_recording: true,
     verified_max_duration_seconds: 480,
+    verified_silence_nudge_interval_seconds: 12,
+    verified_silence_end_call_timeout_seconds: 30,
     verified_tool_ids: verifiedPrompt.tool_ids,
     verified_built_in_tools: verifiedBuiltInTools,
     returned_config_sha256: verifiedHash,
