@@ -20,6 +20,7 @@ type SipDialOptions = {
   leadEmail?: string | null;
   companyName?: string | null;
   tenantTimezone?: string | null;
+  doubleDialAttempt?: number;
 };
 
 export type ElevenLabsSipDialResult = {
@@ -46,6 +47,7 @@ export async function elevenLabsSipDial(
     leadEmail: options.leadEmail,
     companyName: options.companyName,
     tenantTimezone: options.tenantTimezone,
+    doubleDialAttempt: options.doubleDialAttempt,
   });
 
   const response = await fetch(

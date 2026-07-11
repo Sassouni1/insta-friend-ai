@@ -116,6 +116,14 @@ serve(async (req) => {
         tenant_id,
         caller_phone: to_number,
         direction: "outbound",
+        double_dial_attempt: 1,
+        telnyx_event_payload: {
+          provider: "elevenlabs_sip",
+          lead_name: caller_name || null,
+          lead_email: caller_email || null,
+          double_dial_attempt: 1,
+          double_dial_parent_conversation_id: null,
+        },
       })
       .select("id")
       .single();
@@ -135,6 +143,7 @@ serve(async (req) => {
       leadEmail: caller_email,
       companyName: tenantRow?.name,
       tenantTimezone: tenantRow?.timezone,
+      doubleDialAttempt: 1,
     });
 
     await admin
@@ -148,6 +157,10 @@ serve(async (req) => {
           sip_phone_number_id: ELEVENLABS_SIP_PHONE_NUMBER_ID,
           sip_call_id: dialData.sip_call_id,
           from_number: fromNumber,
+          lead_name: caller_name || null,
+          lead_email: caller_email || null,
+          double_dial_attempt: 1,
+          double_dial_parent_conversation_id: null,
         },
       })
       .eq("id", convRow.id);

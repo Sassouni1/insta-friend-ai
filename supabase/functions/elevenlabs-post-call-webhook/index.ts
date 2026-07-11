@@ -1,6 +1,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { jsonResponse } from "../_shared/cors.ts";
+import { placeDial } from "../_shared/dialer.ts";
+import { isVerifiedNoAnswer } from "../_shared/double-dial.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -137,6 +139,105 @@ function compactEventPayload(eventType: string, data: any) {
   };
 }
 
+async function startDoubleDialIfEligible(
+  supabase: any,
+  localConversationId: string,
+  failureReason: unknown,
+  sourceContext?: any,
+) {
+  if (!isVerifiedNoAnswer(failureReason)) {
+    return { started: false, reason: "not-no-answer" };
+  }
+
+  let source = sourceContext || null;
+  if (!source) {
+    const { data, error } = await supabase
+      .from("conversations")
+      .select(
+        "id, tenant_id, caller_phone, direction, double_dial_attempt, double_dial_retry_started_at, telnyx_event_payload",
+      )
+      .eq("id", localConversationId)
+      .maybeSingle();
+    if (error) {
+      return { started: false, reason: "source-conversation-missing" };
+    }
+    source = data;
+  }
+  if (!source) {
+    return { started: false, reason: "source-conversation-missing" };
+  }
+  if (source.direction !== "outbound" || source.double_dial_attempt !== 1) {
+    return { started: false, reason: "not-first-outbound-attempt" };
+  }
+
+  const { data: claimed, error: claimError } = await supabase
+    .from("conversations")
+    .update({
+      double_dial_retry_started_at: new Date().toISOString(),
+      double_dial_retry_error: null,
+    })
+    .eq("id", localConversationId)
+    .eq("double_dial_attempt", 1)
+    .is("double_dial_retry_started_at", null)
+    .select("id")
+    .maybeSingle();
+  if (claimError || !claimed) {
+    return { started: false, reason: "already-claimed" };
+  }
+
+  const priorPayload = source.telnyx_event_payload || {};
+  try {
+    const retry = await placeDial({
+      supabase,
+      tenantId: source.tenant_id,
+      leadPhone: source.caller_phone,
+      leadName: priorPayload.lead_name || null,
+      leadEmail: priorPayload.lead_email || null,
+      doubleDialAttempt: 2,
+      parentConversationId: localConversationId,
+    });
+
+    await supabase
+      .from("conversations")
+      .update({
+        double_dial_retry_conversation_id: retry.conversationId,
+        double_dial_retry_error: null,
+      })
+      .eq("id", localConversationId);
+    await supabase
+      .from("scheduled_calls")
+      .update({
+        status: "dialed",
+        attempts: 2,
+        conversation_id: retry.conversationId,
+        last_error: null,
+      })
+      .eq("conversation_id", localConversationId);
+
+    console.log(
+      `[elevenlabs-post-call] double dial started ${localConversationId} -> ${retry.conversationId}`,
+    );
+    return {
+      started: true,
+      retry_conversation_id: retry.conversationId,
+    };
+  } catch (error: any) {
+    const message = String(error?.message || error).slice(0, 500);
+    await supabase
+      .from("conversations")
+      .update({ double_dial_retry_error: message })
+      .eq("id", localConversationId);
+    await supabase
+      .from("scheduled_calls")
+      .update({ last_error: `double dial failed: ${message}`.slice(0, 500) })
+      .eq("conversation_id", localConversationId);
+    console.error(
+      `[elevenlabs-post-call] double dial failed for ${localConversationId}: ${message}`,
+    );
+    return { started: false, reason: "retry-failed", error: message };
+  }
+}
+
 serve(async (req) => {
   if (req.method !== "POST") {
     return jsonResponse({ error: "method not allowed" }, 405);
@@ -179,6 +280,13 @@ serve(async (req) => {
     const sipBody = data?.metadata?.type === "sip"
       ? data.metadata.body || {}
       : {};
+    const { data: retrySource } = await supabase
+      .from("conversations")
+      .select(
+        "id, tenant_id, caller_phone, direction, double_dial_attempt, double_dial_retry_started_at, telnyx_event_payload",
+      )
+      .eq("id", localConversationId)
+      .maybeSingle();
     await supabase
       .from("conversations")
       .update({
@@ -202,7 +310,13 @@ serve(async (req) => {
         ).slice(0, 500),
       })
       .eq("conversation_id", localConversationId);
-    return jsonResponse({ ok: true, event: eventType });
+    const doubleDial = await startDoubleDialIfEligible(
+      supabase,
+      localConversationId,
+      data?.failure_reason,
+      retrySource,
+    );
+    return jsonResponse({ ok: true, event: eventType, double_dial: doubleDial });
   }
 
   const transcript = Array.isArray(data?.transcript) ? data.transcript : [];

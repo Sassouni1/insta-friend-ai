@@ -8,6 +8,7 @@ export type ElevenLabsSipCallInput = {
   leadEmail?: string | null;
   companyName?: string | null;
   tenantTimezone?: string | null;
+  doubleDialAttempt?: number;
 };
 
 function firstNameFrom(fullName?: string | null): string {
@@ -46,6 +47,7 @@ export function buildElevenLabsSipCallPayload(input: ElevenLabsSipCallInput) {
         company_name: companyName,
         tenant_timezone: tenantTimezone,
         call_direction: "outbound",
+        double_dial_attempt: input.doubleDialAttempt || 1,
         booking_verified: false,
         booked_appointment_id: "",
         booking_confirmation: "",

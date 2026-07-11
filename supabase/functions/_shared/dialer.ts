@@ -24,13 +24,25 @@ export async function placeDial(opts: {
   leadPhone: string;
   leadName: string | null;
   leadEmail: string | null;
+  doubleDialAttempt?: number;
+  parentConversationId?: string | null;
 }): Promise<{ conversationId: string; elevenLabsConversationId: string }> {
-  const { supabase, tenantId, leadPhone, leadName, leadEmail } = opts as {
+  const {
+    supabase,
+    tenantId,
+    leadPhone,
+    leadName,
+    leadEmail,
+    doubleDialAttempt = 1,
+    parentConversationId = null,
+  } = opts as {
     supabase: SupabaseAny;
     tenantId: string;
     leadPhone: string;
     leadName: string | null;
     leadEmail: string | null;
+    doubleDialAttempt?: number;
+    parentConversationId?: string | null;
   };
 
   await assertPhoneNotSuppressed(supabase, tenantId, leadPhone);
@@ -61,6 +73,15 @@ export async function placeDial(opts: {
       tenant_id: tenantId,
       caller_phone: leadPhone,
       direction: "outbound",
+      double_dial_attempt: doubleDialAttempt,
+      double_dial_parent_conversation_id: parentConversationId,
+      telnyx_event_payload: {
+        provider: "elevenlabs_sip",
+        lead_name: leadName,
+        lead_email: leadEmail,
+        double_dial_attempt: doubleDialAttempt,
+        double_dial_parent_conversation_id: parentConversationId,
+      },
     })
     .select("id")
     .single();
@@ -77,6 +98,7 @@ export async function placeDial(opts: {
     leadEmail,
     companyName: tenantRow?.name,
     tenantTimezone: tenantRow?.timezone,
+    doubleDialAttempt,
   });
 
   await supabase
@@ -90,6 +112,10 @@ export async function placeDial(opts: {
         sip_phone_number_id: ELEVENLABS_SIP_PHONE_NUMBER_ID,
         sip_call_id: dialData.sip_call_id,
         from_number: phoneRow.e164_number,
+        lead_name: leadName,
+        lead_email: leadEmail,
+        double_dial_attempt: doubleDialAttempt,
+        double_dial_parent_conversation_id: parentConversationId,
       },
     })
     .eq("id", convRow.id);

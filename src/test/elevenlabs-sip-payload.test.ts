@@ -28,6 +28,7 @@ describe("direct ElevenLabs SIP payload", () => {
         first_name: "Chris",
         company_name: "Infinite Hair",
         tenant_timezone: "America/New_York",
+        double_dial_attempt: 1,
       });
   });
 
@@ -49,5 +50,21 @@ describe("direct ElevenLabs SIP payload", () => {
     expect(
       payload.conversation_initiation_client_data.dynamic_variables.first_name,
     ).toBe("");
+  });
+
+  it("marks a retry as the second and final double-dial attempt", () => {
+    const payload = buildElevenLabsSipCallPayload({
+      agentId: "agent_stable",
+      phoneNumberId: "phnum_direct",
+      toNumber: "+14155550100",
+      tenantId: "tenant",
+      conversationId: "retry-conversation",
+      doubleDialAttempt: 2,
+    });
+
+    expect(
+      payload.conversation_initiation_client_data.dynamic_variables
+        .double_dial_attempt,
+    ).toBe(2);
   });
 });
