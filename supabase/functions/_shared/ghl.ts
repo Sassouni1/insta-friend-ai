@@ -51,6 +51,7 @@ export class GhlClient {
     lastName?: string;
     email?: string;
     phone?: string;
+    dnd?: boolean;
   }): Promise<{ id: string }> {
     const data = await this.request(`/contacts/upsert`, {
       method: "POST",

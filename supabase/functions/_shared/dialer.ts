@@ -6,6 +6,10 @@ import {
   ELEVENLABS_SIP_PHONE_NUMBER_ID,
   elevenLabsSipDial,
 } from "./elevenlabs-sip.ts";
+import {
+  assertPhoneNotSuppressed,
+  isPhoneSuppressed,
+} from "./opt-out.ts";
 
 // Loose alias — Deno's strict typing on createClient<unknown> infers `never` for
 // schema, which breaks .from() chaining across modules. We treat the client as
@@ -28,6 +32,8 @@ export async function placeDial(opts: {
     leadName: string | null;
     leadEmail: string | null;
   };
+
+  await assertPhoneNotSuppressed(supabase, tenantId, leadPhone);
 
   const [{ data: phoneRow }, { data: tenantRow }] = await Promise.all([
     supabase
@@ -116,6 +122,24 @@ export async function fireCall(scheduledId: string, logTag = "dial"): Promise<{
     console.log(
       `[${logTag}] call ${scheduledId} already processed or cancelled`,
     );
+    return { status: "skipped" };
+  }
+
+  if (
+    await isPhoneSuppressed(
+      supabase,
+      claimed.tenant_id,
+      claimed.lead_phone,
+    )
+  ) {
+    await supabase
+      .from("scheduled_calls")
+      .update({
+        status: "cancelled",
+        last_error: "phone number opted out",
+      })
+      .eq("id", scheduledId);
+    console.log(`[${logTag}] suppressed opted-out number for ${scheduledId}`);
     return { status: "skipped" };
   }
 

@@ -8,6 +8,7 @@ import {
   ELEVENLABS_SIP_PHONE_NUMBER_ID,
   elevenLabsSipDial,
 } from "../_shared/elevenlabs-sip.ts";
+import { assertPhoneNotSuppressed } from "../_shared/opt-out.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -66,6 +67,8 @@ serve(async (req) => {
     const { tenant_id, to_number, caller_name, caller_email } = parsed.data;
     const isChrisTestCall = parsed.data.test_call === true &&
       to_number === CHRIS_TEST_NUMBER;
+
+    await assertPhoneNotSuppressed(admin, tenant_id, to_number);
 
     const { data: tenantRow } = await admin
       .from("tenants")
