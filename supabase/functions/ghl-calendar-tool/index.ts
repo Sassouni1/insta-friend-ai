@@ -7,7 +7,7 @@ import { GhlClient, flattenSlots, getFreshGhlToken } from "../_shared/ghl.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-const TENANT_ID = "8ad5b297-2581-4953-91bb-7cef9a8f2080";
+const TENANT_ID = "721ca656-4c25-4ced-bd2e-4f03e8b3bacc";
 const CALENDAR_TOOL_NAME = "ghl_calendar_tool";
 
 const AvailabilitySchema = z.object({

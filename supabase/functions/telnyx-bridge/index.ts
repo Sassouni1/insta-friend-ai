@@ -249,7 +249,7 @@ function buildCalendarToolConfig() {
     ],
     dynamic_variables: {
       dynamic_variable_placeholders: {
-        tenant_id: "8ad5b297-2581-4953-91bb-7cef9a8f2080",
+        tenant_id: "721ca656-4c25-4ced-bd2e-4f03e8b3bacc",
         conversation_id: "00000000-0000-0000-0000-000000000000",
         caller_phone: "+15555550100",
         tenant_timezone: "America/New_York",

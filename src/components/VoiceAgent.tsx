@@ -104,7 +104,7 @@ function VoiceAgentInner() {
         const body = {
           ...parameters,
           action,
-          tenant_id: parameters?.tenant_id || "8ad5b297-2581-4953-91bb-7cef9a8f2080",
+          tenant_id: parameters?.tenant_id || "721ca656-4c25-4ced-bd2e-4f03e8b3bacc",
         };
 
         if (action === "book") {
