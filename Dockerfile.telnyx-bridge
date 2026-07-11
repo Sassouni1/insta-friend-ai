@@ -1,0 +1,11 @@
+FROM denoland/deno:alpine-2.8.1
+
+WORKDIR /app
+
+COPY supabase/functions ./supabase/functions
+
+RUN deno cache supabase/functions/telnyx-bridge/index.ts
+
+USER deno
+
+CMD ["run", "--allow-env", "--allow-net", "supabase/functions/telnyx-bridge/index.ts"]

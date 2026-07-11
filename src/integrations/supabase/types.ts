@@ -71,6 +71,8 @@ export type Database = {
       conversations: {
         Row: {
           agent_id: string | null
+          agent_config_version: string | null
+          agent_output_alert_count: number
           bridge_agent_audio_gap_count: number
           bridge_calendar_tool_call_count: number
           bridge_calendar_tool_error_count: number
@@ -88,6 +90,8 @@ export type Database = {
           bridge_last_inbound_energy: number | null
           bridge_last_vad_score: number | null
           bridge_max_agent_audio_gap_ms: number
+          bridge_reconnect_count: number
+          bridge_session_count: number
           bridge_telnyx_agent_audio_chunks_sent: number
           bridge_telnyx_clear_count: number
           caller_phone: string | null
@@ -100,6 +104,8 @@ export type Database = {
           first_inbound_speech_at: string | null
           id: string
           inbound_speech_frame_count: number
+          elevenlabs_agent_id: string | null
+          elevenlabs_conversation_id: string | null
           last_agent_audio_at: string | null
           last_caller_audio_forwarded_at: string | null
           last_el_vad_at: string | null
@@ -119,6 +125,8 @@ export type Database = {
         }
         Insert: {
           agent_id?: string | null
+          agent_config_version?: string | null
+          agent_output_alert_count?: number
           bridge_agent_audio_gap_count?: number
           bridge_calendar_tool_call_count?: number
           bridge_calendar_tool_error_count?: number
@@ -136,6 +144,8 @@ export type Database = {
           bridge_last_inbound_energy?: number | null
           bridge_last_vad_score?: number | null
           bridge_max_agent_audio_gap_ms?: number
+          bridge_reconnect_count?: number
+          bridge_session_count?: number
           bridge_telnyx_agent_audio_chunks_sent?: number
           bridge_telnyx_clear_count?: number
           caller_phone?: string | null
@@ -148,6 +158,8 @@ export type Database = {
           first_inbound_speech_at?: string | null
           id?: string
           inbound_speech_frame_count?: number
+          elevenlabs_agent_id?: string | null
+          elevenlabs_conversation_id?: string | null
           last_agent_audio_at?: string | null
           last_caller_audio_forwarded_at?: string | null
           last_el_vad_at?: string | null
@@ -167,6 +179,8 @@ export type Database = {
         }
         Update: {
           agent_id?: string | null
+          agent_config_version?: string | null
+          agent_output_alert_count?: number
           bridge_agent_audio_gap_count?: number
           bridge_calendar_tool_call_count?: number
           bridge_calendar_tool_error_count?: number
@@ -184,6 +198,8 @@ export type Database = {
           bridge_last_inbound_energy?: number | null
           bridge_last_vad_score?: number | null
           bridge_max_agent_audio_gap_ms?: number
+          bridge_reconnect_count?: number
+          bridge_session_count?: number
           bridge_telnyx_agent_audio_chunks_sent?: number
           bridge_telnyx_clear_count?: number
           caller_phone?: string | null
@@ -196,6 +212,8 @@ export type Database = {
           first_inbound_speech_at?: string | null
           id?: string
           inbound_speech_frame_count?: number
+          elevenlabs_agent_id?: string | null
+          elevenlabs_conversation_id?: string | null
           last_agent_audio_at?: string | null
           last_caller_audio_forwarded_at?: string | null
           last_el_vad_at?: string | null
@@ -466,6 +484,17 @@ export type Database = {
           _user_id: string
         }
         Returns: boolean
+      }
+      register_voice_bridge_session: {
+        Args: {
+          p_agent_id: string
+          p_config_version: string
+          p_conversation_id: string
+        }
+        Returns: {
+          reconnect_count: number
+          session_count: number
+        }[]
       }
     }
     Enums: {

@@ -9,6 +9,8 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
+    "elevenlabs:sync-outbound": "node scripts/sync-elevenlabs-outbound-agent.mjs",
+    "elevenlabs:test-outbound": "node scripts/test-elevenlabs-outbound-models.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

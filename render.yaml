@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: vlix-telnyx-elevenlabs-bridge
+    runtime: docker
+    plan: free
+    region: virginia
+    branch: supabase-cutover-2026-07-10
+    autoDeploy: true
+    dockerfilePath: ./Dockerfile.telnyx-bridge
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: RENDER
+        value: "true"
+      - key: SUPABASE_URL
+        value: https://prjzhyzgfphiajhguzzu.supabase.co
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY_CUSTOM
+        sync: false
+      - key: ELEVENLABS_OUTBOUND_AGENT_ID
+        value: agent_9201kr7jkn3xfz2sr11sngjnqxwh

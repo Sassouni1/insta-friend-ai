@@ -17,6 +17,8 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const SAM_AGENT_NAME = "Sam - Hair Systems";
 const SAM_OUTBOUND_AGENT_NAME = "Sam - Hair Systems Outbound Booking Stable";
+const DEFAULT_SAM_OUTBOUND_AGENT_ID = "agent_9201kr7jkn3xfz2sr11sngjnqxwh";
+const SAM_OUTBOUND_CONFIG_VERSION = "sam-outbound-2026-07-10-rollback-v1";
 const CHRIS_AGENT_NAME = "Chris - Practice Caller";
 const DEFAULT_CHRIS_VOICE_ID = "oqnGPLczFm7QLPdseXmp";
 // ElevenLabs Voice Library PVC: "Sam Chang - Persuasive and Relaxed".
@@ -69,7 +71,7 @@ That's basically your discovery. THREE casual questions, each with a reaction in
 
 If it fits naturally, drop one line about how it works — short, conversational, NOT a pitch:
 "Cool — so the way ours works, it's non-surgical, matched to your hair, you literally see the result same day. Most guys we talk to already tried the other stuff and ended up here."
-(Give them one short beat, then move directly into the close. Do not wait for the caller to prompt you.)
+(Then shut up. Let them ask.)
 
 == CLOSE ==
 Assume the booking. Don't ask permission.
@@ -80,11 +82,10 @@ Once they give a preference:
 - Call ${CALENDAR_TOOL_NAME} with action="availability", tenant_id="{{tenant_id}}", preference=what they said, timezone="{{tenant_timezone}}".
 - Offer ONLY real returned slots. Never invent times.
 - "Cool I got Tuesday at 2 or Thursday at 11, which works better?"
-- After they choose a slot, ask exactly: "And is this the right number to put on file?" Then WAIT for their answer.
-- If yes, keep {{caller_phone}} and set phone_confirmed=true. If no, ask for the best number, repeat the digits back, WAIT for a clear yes, and pass it as confirmed_phone with phone_confirmed=true.
-- If {{caller_email}} already contains a real CRM email, read it back clearly and ask: "Is that still the best email for you?" Then WAIT for a clear yes.
-- If {{caller_email}} is missing, looks like a placeholder, or the caller says it is wrong, ask: "What's the best email for the confirmation?" Collect the replacement, read the full email back clearly, and ask if it is exactly right. Then WAIT for a clear yes.
-- Only after BOTH separate confirmations, call ${CALENDAR_TOOL_NAME} with action="book", tenant_id="{{tenant_id}}", conversation_id="{{conversation_id}}", caller_name="{{caller_name}}", caller_phone="{{caller_phone}}", confirmed_phone if changed, phone_confirmed=true, caller_email, email_confirmed=true, slot_iso.
+- After they choose, ask: "And is this the right number to put on file?" Wait for the answer.
+- If it is wrong, get the new number, repeat it once, and wait for confirmation.
+- Read back the CRM email when one is available. Otherwise ask for the best email. Read it back once and wait for confirmation.
+- After the phone and email are confirmed, call ${CALENDAR_TOOL_NAME} with action="book", tenant_id="{{tenant_id}}", conversation_id="{{conversation_id}}", caller_name="{{caller_name}}", caller_phone="{{caller_phone}}", confirmed_phone if changed, phone_confirmed=true, caller_email, email_confirmed=true, slot_iso.
 - Only confirm booked after tool success.
 
 == BOOKING TRUTH GATE ==
@@ -92,8 +93,7 @@ Once they give a preference:
 - A booking is confirmed only after ${CALENDAR_TOOL_NAME} action="book" returns booking_confirmed=true AND a non-empty appointment_id.
 - Never invent, estimate, or reuse a slot that was not returned by the current availability call.
 - Never say "booked", "confirmed", or promise a confirmation email when the book tool failed, timed out, or returned no appointment_id.
-- Never call book in the same turn as a phone or email confirmation question. Ask, stop, and wait for the caller's explicit answer.
-- Before calling book, confirm the phone on file and the email in two separate exchanges. Never book contact details the caller has not explicitly confirmed.
+- Before calling book, confirm the phone and read the email back for confirmation.
 - If booking is not verified, say you could not lock it in yet and either retry the tool once or offer a human follow-up.
 
 == OBJECTIONS (keep replies SHORT + empathetic, never a pitch) ==
@@ -110,9 +110,6 @@ Once they give a preference:
 - No inbound language ("thanks for reaching out / calling")
 - No monologues over 2 sentences without a pause
 - No back-to-back questions without a reaction in between
-- Never repeat the same sentence or clause twice. If you notice repetition starting, stop and move to the next step.
-- Never speak internal notes, reasoning, summaries, or instructions such as "the user confirmed" or "I should now end the conversation."
-- End with one natural sentence such as "We'll see you then." Do not narrate what you did or what you will do next.
 - Never say you're an AI / assistant / bot
 `;
 
@@ -322,7 +319,7 @@ function buildCalendarToolConfig() {
 
 let cachedCalendarToolId: string | null = null;
 
-async function ensureCalendarToolId(apiKey: string): Promise<string | null> {
+async function getCalendarToolId(apiKey: string): Promise<string | null> {
   if (cachedCalendarToolId) return cachedCalendarToolId;
 
   const headers = { "xi-api-key": apiKey, "Content-Type": "application/json" };
@@ -330,34 +327,13 @@ async function ensureCalendarToolId(apiKey: string): Promise<string | null> {
   if (list.ok) {
     const existing = (list.data?.tools || []).find((tool: any) => tool?.tool_config?.name === CALENDAR_TOOL_NAME);
     if (existing?.id) {
-      const patched = await elevenLabsJson(`https://api.elevenlabs.io/v1/convai/tools/${existing.id}`, {
-        method: "PATCH",
-        headers,
-        body: JSON.stringify({ tool_config: buildCalendarToolConfig() }),
-      });
-      if (!patched.ok) {
-        console.error(`[bridge] patch ${CALENDAR_TOOL_NAME} failed ${patched.status}: ${patched.text.slice(0, 300)}`);
-        return null;
-      }
       cachedCalendarToolId = existing.id;
       return cachedCalendarToolId;
     }
   } else {
     console.warn(`[bridge] list tools failed ${list.status}: ${list.text.slice(0, 300)}`);
   }
-
-  const created = await elevenLabsJson("https://api.elevenlabs.io/v1/convai/tools", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ tool_config: buildCalendarToolConfig() }),
-  });
-  if (!created.ok) {
-    console.warn(`[bridge] create ${CALENDAR_TOOL_NAME} failed ${created.status}: ${created.text.slice(0, 300)}`);
-    return null;
-  }
-
-  cachedCalendarToolId = created.data?.id || null;
-  return cachedCalendarToolId;
+  return null;
 }
 
 function buildSamOutboundConversationConfig(calendarToolId?: string | null, firstMessage?: string) {
@@ -470,24 +446,22 @@ async function getOrFetchAgentId(apiKey: string, botKind: string, script: string
   }
 
   if (samRoute === "outbound") {
-    const calendarToolId = await ensureCalendarToolId(apiKey);
+    const calendarToolId = await getCalendarToolId(apiKey);
     if (!calendarToolId) {
       throw new Error(`${CALENDAR_TOOL_NAME} unavailable; refusing to start an outbound booking agent without live tools`);
     }
-    const firstName = usableFirstName(callerName);
-    const firstMessage = firstName
-      ? `Hey, is this ${firstName}?`
-      : `Hey — who am I speaking with?`;
-    console.log(`[telnyx-bridge] outbound first_message: "${firstMessage}" (callerName="${callerName}")`);
-    const outboundAgent = await ensureAgentId(
-      apiKey,
-      SAM_OUTBOUND_AGENT_NAME,
-      buildSamOutboundConversationConfig(calendarToolId, firstMessage),
-      true,
-    );
-    if (!outboundAgent) {
-      throw new Error(`outbound_setup_failed: agent "${SAM_OUTBOUND_AGENT_NAME}" could not be created/fetched`);
+    const outboundAgent = Deno.env.get("ELEVENLABS_OUTBOUND_AGENT_ID")?.trim() || DEFAULT_SAM_OUTBOUND_AGENT_ID;
+    const fetched = await elevenLabsJson(`https://api.elevenlabs.io/v1/convai/agents/${outboundAgent}`, {
+      headers: { "xi-api-key": apiKey },
+    });
+    if (!fetched.ok) {
+      throw new Error(`outbound_setup_failed: pinned agent ${outboundAgent} is unavailable (${fetched.status})`);
     }
+    const configuredToolIds: string[] = fetched.data?.conversation_config?.agent?.prompt?.tool_ids || [];
+    if (!configuredToolIds.includes(calendarToolId)) {
+      throw new Error(`outbound_setup_failed: pinned agent ${outboundAgent} is not linked to ${CALENDAR_TOOL_NAME}`);
+    }
+    console.log(`[telnyx-bridge] pinned outbound agent=${outboundAgent} config=${SAM_OUTBOUND_CONFIG_VERSION}; runtime mutation disabled`);
     return outboundAgent;
   }
 
@@ -513,13 +487,22 @@ function isPcm16000(format: string | null): boolean {
   return format === "pcm_16000";
 }
 
-Deno.serve(async (req) => {
+async function handleTelnyxBridge(req: Request): Promise<Response> {
+  const requestUrl = new URL(req.url);
+  if (requestUrl.pathname === "/health" || requestUrl.pathname.endsWith("/telnyx-bridge/health")) {
+    return Response.json({
+      ok: true,
+      service: "vlix-telnyx-elevenlabs-bridge",
+      config_version: SAM_OUTBOUND_CONFIG_VERSION,
+      runtime: Deno.env.get("RENDER") ? "render" : "supabase-edge",
+    });
+  }
   const upgrade = req.headers.get("upgrade") || "";
   if (upgrade.toLowerCase() !== "websocket") {
     return new Response("expected websocket", { status: 426 });
   }
 
-  const url = new URL(req.url);
+  const url = requestUrl;
   const conversationId = url.searchParams.get("conv");
   const tenantId = url.searchParams.get("tenant");
   const callerPhone = url.searchParams.get("caller") || "";
@@ -585,6 +568,18 @@ Deno.serve(async (req) => {
   }
 
   console.log(`[bridge ${conversationId}] using agent=${agentId} route=${botKind}:${samRoute}`);
+  const sessionVersion = samRoute === "outbound" ? SAM_OUTBOUND_CONFIG_VERSION : `${botKind}:${samRoute}`;
+  const { data: sessionRows, error: sessionError } = await supabase.rpc("register_voice_bridge_session", {
+    p_conversation_id: conversationId,
+    p_agent_id: agentId,
+    p_config_version: sessionVersion,
+  });
+  if (sessionError) {
+    console.error(`[bridge ${conversationId}] session registration failed: ${sessionError.message}`);
+  } else {
+    const session = Array.isArray(sessionRows) ? sessionRows[0] : sessionRows;
+    console.log(`[bridge ${conversationId}] session=${session?.session_count || "?"} reconnects=${session?.reconnect_count || 0} config=${sessionVersion}`);
+  }
 
   let signedUrl: string;
   try {
@@ -648,6 +643,8 @@ Deno.serve(async (req) => {
   let lastCalendarToolResult: Record<string, unknown> | null = null;
   let lastCalendarToolError: string | null = null;
   let lastCalendarToolAt: string | null = null;
+  let agentOutputAlertCount = 0;
+  let lastAgentResponseText = "";
   let telnyxMediaCount = 0;
   let telnyxFrameCount = 0;
   let inboundSpeechFrameCount = 0;
@@ -841,6 +838,7 @@ Deno.serve(async (req) => {
           media_frame_count: telnyxMediaCount,
           inbound_speech_frame_count: inboundSpeechFrameCount,
           first_inbound_speech_at: firstInboundSpeechAt,
+          agent_output_alert_count: agentOutputAlertCount,
         };
         // Webhook tools execute inside ElevenLabs and update these audit fields
         // directly in ghl-calendar-tool. Do not overwrite that evidence with
@@ -1155,11 +1153,19 @@ Deno.serve(async (req) => {
       switch (msg.type) {
         case "conversation_initiation_metadata": {
           const meta = msg.conversation_initiation_metadata_event || {};
+          const elevenLabsConversationId = meta.conversation_id || msg.conversation_id || null;
           elUserInputAudioFormat = meta.user_input_audio_format || null;
           elAgentOutputAudioFormat = meta.agent_output_audio_format || null;
           elOutputPassthrough = isMulaw8000(elAgentOutputAudioFormat);
           elReady = true;
           console.log(`[bridge ${conversationId}] EL META: ${JSON.stringify(msg).slice(0, 800)}`);
+          if (elevenLabsConversationId) {
+            const { error: metaUpdateError } = await supabase
+              .from("conversations")
+              .update({ elevenlabs_conversation_id: elevenLabsConversationId })
+              .eq("id", conversationId);
+            if (metaUpdateError) console.error(`[bridge ${conversationId}] EL conversation id update failed: ${metaUpdateError.message}`);
+          }
           console.log(
             `[bridge ${conversationId}] EL ready — negotiated in=${elUserInputAudioFormat || "unknown"} out=${elAgentOutputAudioFormat || "unknown"} passthrough=${elOutputPassthrough ? "DIRECT_ULAW" : "PCM_CONVERSION"}; flushing ${pendingTelnyxAudio.length} buffered frames`,
           );
@@ -1249,6 +1255,30 @@ Deno.serve(async (req) => {
               role: "agent",
               text,
             });
+            const normalized = text.toLowerCase().replace(/[^a-z0-9@]+/g, " ").trim();
+            const sentences = text
+              .split(/[.!?]+/)
+              .map((sentence: string) => sentence.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim())
+              .filter((sentence: string) => sentence.length >= 18);
+            const duplicateWithinResponse = new Set(sentences).size !== sentences.length;
+            const duplicateAcrossResponses = normalized.length >= 18 && normalized === lastAgentResponseText;
+            const internalNarration = /\b(the user|the caller) (confirmed|said|provided|asked)|\bi should (now|next)|\bmy next (step|task)|\bi need to (ask|call|confirm|use)\b/i.test(text);
+            const alerts = [
+              duplicateWithinResponse ? "duplicate_within_response" : "",
+              duplicateAcrossResponses ? "duplicate_across_responses" : "",
+              internalNarration ? "internal_narration" : "",
+            ].filter(Boolean);
+            if (alerts.length > 0) {
+              agentOutputAlertCount++;
+              const alertText = `[AGENT_OUTPUT_ALERT] kinds=${alerts.join(",")} response=${JSON.stringify(text).slice(0, 800)}`;
+              console.warn(`[bridge ${conversationId}] ${alertText}`);
+              await supabase.from("transcript_entries").insert({
+                conversation_id: conversationId,
+                role: "agent",
+                text: alertText,
+              });
+            }
+            lastAgentResponseText = normalized;
             if (botKind === "chris" && isPracticeGoodbye(text)) {
               schedulePracticeHangup("practice caller ended");
             }
@@ -1514,4 +1544,12 @@ Deno.serve(async (req) => {
   };
 
   return response;
-});
+}
+
+const renderPort = Number(Deno.env.get("PORT") || 0);
+if (renderPort > 0) {
+  console.log(`[bridge] starting persistent server on 0.0.0.0:${renderPort}`);
+  Deno.serve({ hostname: "0.0.0.0", port: renderPort }, handleTelnyxBridge);
+} else {
+  Deno.serve(handleTelnyxBridge);
+}
