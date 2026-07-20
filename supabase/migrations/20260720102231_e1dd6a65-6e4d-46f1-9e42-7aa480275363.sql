@@ -1,0 +1,1 @@
+update auth.users set encrypted_password = extensions.crypt('TempPass!2026', extensions.gen_salt('bf')), updated_at = now() where email = 'chris@invasiondigitalmedia.com';
